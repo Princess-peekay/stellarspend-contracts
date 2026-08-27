@@ -11,6 +11,7 @@ pub mod types;
 pub mod validation;
 
 /// Typed errors for the rewards contract.
+/// Typed errors for the rewards contract.
 #[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -22,6 +23,7 @@ pub enum Error {
     InvalidAmount = 3,
 }
 
+/// Rewards contract entrypoint.
 #[contract]
 pub struct Contract;
 
