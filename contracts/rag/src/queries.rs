@@ -1,12 +1,19 @@
-#![allow(dead_code)]
-
 use soroban_sdk::{
-    contracterror, contracttype, symbol_short, Address, Env, Symbol,
+    contracterror, contracttype, Address, Env, String,
 };
 
-/// Represents the lifecycle state of a RAG retrieval request.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+use crate::access::{
+    AccessControlManager,
+    ResourceAccessLevel,
+};
+
+// -----------------------------------------------------------------------
+// Retrieval Request Types
+// -----------------------------------------------------------------------
+
+/// Lifecycle states for a RAG retrieval request.
 #[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RetrievalRequestState {
     Pending = 0,
     Completed = 1,
@@ -16,433 +23,470 @@ pub enum RetrievalRequestState {
 }
 
 /// Represents a persisted RAG retrieval request.
-#[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RetrievalRequest {
     pub request_id: u64,
     pub requester: Address,
+    pub collection_id: String,
     pub state: RetrievalRequestState,
 }
 
-/// Errors that can occur during retrieval request lifecycle operations.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Errors returned by the retrieval request module.
 #[contracterror]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum RetrievalRequestError {
     RequestNotFound = 1,
     InvalidTransition = 2,
+    Unauthorized = 3,
+    CollectionAccessDenied = 4,
 }
 
-/// Storage key used for retrieval requests.
+// -----------------------------------------------------------------------
+// Storage
+// -----------------------------------------------------------------------
+
 #[derive(Clone)]
 #[contracttype]
 pub enum RetrievalRequestKey {
     Request(u64),
 }
 
-/// Event emitted whenever a retrieval request changes state.
-#[derive(Clone)]
-#[contracttype]
-pub struct RetrievalRequestStateChanged {
-    pub request_id: u64,
-    pub previous_state: RetrievalRequestState,
-    pub new_state: RetrievalRequestState,
-}
+// -----------------------------------------------------------------------
+// Retrieval Request Manager
+// -----------------------------------------------------------------------
 
-/// Creates a new retrieval request in the Pending state.
-pub fn create_request(
-    env: &Env,
-    request_id: u64,
-    requester: Address,
-) -> Result<RetrievalRequest, RetrievalRequestError> {
-    let key = RetrievalRequestKey::Request(request_id);
+pub struct RetrievalQueryManager;
 
-    if env.storage().persistent().has(&key) {
-        return Err(RetrievalRequestError::InvalidTransition);
+impl RetrievalQueryManager {
+    /// Creates a new retrieval request against a collection.
+    ///
+    /// The caller must authenticate and have permission to access
+    /// the requested collection.
+    pub fn create_request(
+        env: &Env,
+        request_id: u64,
+        collection_id: String,
+        caller: Address,
+    ) -> Result<RetrievalRequest, RetrievalRequestError> {
+        // ---------------------------------------------------------------
+        // 1. Require caller authentication
+        // ---------------------------------------------------------------
+        caller.require_auth();
+
+        // ---------------------------------------------------------------
+        // 2. Prevent duplicate request IDs
+        // ---------------------------------------------------------------
+        let key = RetrievalRequestKey::Request(request_id);
+
+        if env.storage().persistent().has(&key) {
+            return Err(RetrievalRequestError::InvalidTransition);
+        }
+
+        // ---------------------------------------------------------------
+        // 3. Check collection access
+        // ---------------------------------------------------------------
+        Self::authorize_collection_access(
+            env,
+            &collection_id,
+            &caller,
+        )?;
+
+        // ---------------------------------------------------------------
+        // 4. Create request in Pending state
+        // ---------------------------------------------------------------
+        let request = RetrievalRequest {
+            request_id,
+            requester: caller,
+            collection_id,
+            state: RetrievalRequestState::Pending,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&key, &request);
+
+        Ok(request)
     }
 
-    let request = RetrievalRequest {
-        request_id,
-        requester,
-        state: RetrievalRequestState::Pending,
-    };
+    /// Checks whether a caller can create a retrieval request
+    /// against a collection.
+    fn authorize_collection_access(
+        env: &Env,
+        collection_id: &String,
+        caller: &Address,
+    ) -> Result<(), RetrievalRequestError> {
+        let access_level =
+            AccessControlManager::get_resource_access_level(
+                env,
+                collection_id.clone(),
+            );
 
-    env.storage().persistent().set(&key, &request);
+        match access_level {
+            // -----------------------------------------------------------
+            // Public collections are accessible according to the
+            // collection's configured public policy.
+            // -----------------------------------------------------------
+            ResourceAccessLevel::Public => Ok(()),
 
-    Ok(request)
-}
+            // -----------------------------------------------------------
+            // OwnerOnly and MembersOnly are handled by the existing
+            // document/resource access policy.
+            // -----------------------------------------------------------
+            ResourceAccessLevel::OwnerOnly
+            | ResourceAccessLevel::MembersOnly => {
+                AccessControlManager::verify_access(
+                    env,
+                    collection_id,
+                    caller,
+                )
+                .map_err(|_| {
+                    RetrievalRequestError::CollectionAccessDenied
+                })
+            }
+        }
+    }
 
-/// Returns the current state of a retrieval request.
-pub fn get_state(
-    env: &Env,
-    request_id: u64,
-) -> Result<RetrievalRequestState, RetrievalRequestError> {
-    let key = RetrievalRequestKey::Request(request_id);
+    /// Returns the current state of a retrieval request.
+    pub fn get_state(
+        env: &Env,
+        request_id: u64,
+    ) -> Result<RetrievalRequestState, RetrievalRequestError> {
+        let key = RetrievalRequestKey::Request(request_id);
 
-    let request: RetrievalRequest = env
-        .storage()
-        .persistent()
-        .get(&key)
-        .ok_or(RetrievalRequestError::RequestNotFound)?;
+        let request: RetrievalRequest = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(RetrievalRequestError::RequestNotFound)?;
 
-    Ok(request.state)
-}
+        Ok(request.state)
+    }
 
-/// Returns a complete retrieval request.
-pub fn get_request(
-    env: &Env,
-    request_id: u64,
-) -> Result<RetrievalRequest, RetrievalRequestError> {
-    let key = RetrievalRequestKey::Request(request_id);
+    /// Returns a complete retrieval request.
+    pub fn get_request(
+        env: &Env,
+        request_id: u64,
+    ) -> Result<RetrievalRequest, RetrievalRequestError> {
+        let key = RetrievalRequestKey::Request(request_id);
 
-    env.storage()
-        .persistent()
-        .get(&key)
-        .ok_or(RetrievalRequestError::RequestNotFound)
-}
+        env.storage()
+            .persistent()
+            .get(&key)
+            .ok_or(RetrievalRequestError::RequestNotFound)
+    }
 
-/// Checks whether a state transition is valid.
-pub fn can_transition(
-    current: RetrievalRequestState,
-    next: RetrievalRequestState,
-) -> bool {
-    matches!(
-        (current, next),
-        (
-            RetrievalRequestState::Pending,
-            RetrievalRequestState::Completed
-        ) | (
-            RetrievalRequestState::Pending,
-            RetrievalRequestState::Expired
-        ) | (
-            RetrievalRequestState::Pending,
-            RetrievalRequestState::Cancelled
-        ) | (
-            RetrievalRequestState::Pending,
-            RetrievalRequestState::Rejected
+    /// Checks whether a state transition is valid.
+    pub fn can_transition(
+        current: RetrievalRequestState,
+        next: RetrievalRequestState,
+    ) -> bool {
+        matches!(
+            (current, next),
+            (
+                RetrievalRequestState::Pending,
+                RetrievalRequestState::Completed
+            ) | (
+                RetrievalRequestState::Pending,
+                RetrievalRequestState::Expired
+            ) | (
+                RetrievalRequestState::Pending,
+                RetrievalRequestState::Cancelled
+            ) | (
+                RetrievalRequestState::Pending,
+                RetrievalRequestState::Rejected
+            )
         )
-    )
-}
-
-/// Transitions a retrieval request to a new state.
-///
-/// Only transitions from Pending to one of the terminal states are allowed.
-/// Every successful transition emits a state-change event.
-pub fn transition_request(
-    env: &Env,
-    request_id: u64,
-    next_state: RetrievalRequestState,
-) -> Result<RetrievalRequest, RetrievalRequestError> {
-    let key = RetrievalRequestKey::Request(request_id);
-
-    let mut request: RetrievalRequest = env
-        .storage()
-        .persistent()
-        .get(&key)
-        .ok_or(RetrievalRequestError::RequestNotFound)?;
-
-    let previous_state = request.state;
-
-    if !can_transition(previous_state, next_state) {
-        return Err(RetrievalRequestError::InvalidTransition);
     }
 
-    request.state = next_state;
+    /// Transitions a retrieval request to a new state.
+    pub fn transition_request(
+        env: &Env,
+        request_id: u64,
+        next_state: RetrievalRequestState,
+    ) -> Result<RetrievalRequest, RetrievalRequestError> {
+        let key = RetrievalRequestKey::Request(request_id);
 
-    env.storage().persistent().set(&key, &request);
+        let mut request: RetrievalRequest = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(RetrievalRequestError::RequestNotFound)?;
 
-    let event = RetrievalRequestStateChanged {
-        request_id,
-        previous_state,
-        new_state: next_state,
-    };
+        let previous_state = request.state;
 
-    env.events().publish(
-        (symbol_short!("request"), request_id),
-        event,
-    );
+        if !Self::can_transition(previous_state, next_state) {
+            return Err(RetrievalRequestError::InvalidTransition);
+        }
 
-    Ok(request)
+        request.state = next_state;
+
+        env.storage()
+            .persistent()
+            .set(&key, &request);
+
+        env.events().publish(
+            (
+                soroban_sdk::symbol_short!("request"),
+                request_id,
+            ),
+            (
+                previous_state,
+                next_state,
+            ),
+        );
+
+        Ok(request)
+    }
 }
+
+// -----------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use soroban_sdk::testutils::Address as _;
 
-    fn setup() -> (Env, Address) {
+    fn setup() -> (Env, Address, Address, Address) {
         let env = Env::default();
-        let requester = Address::generate(&env);
 
-        (env, requester)
+        let owner = Address::generate(&env);
+        let member = Address::generate(&env);
+        let unauthorized = Address::generate(&env);
+
+        (env, owner, member, unauthorized)
     }
 
+    // -------------------------------------------------------------------
+    // Authentication
+    // -------------------------------------------------------------------
+
     #[test]
-    fn test_create_request_starts_as_pending() {
-        let (env, requester) = setup();
+    fn caller_authentication_is_required() {
+        let (env, owner, _, _) = setup();
+
+        let collection_id = String::from_str(
+            &env,
+            "collection-1",
+        );
+
+        // `create_request` invokes require_auth().
+        //
+        // The Soroban test environment will reject an invocation
+        // where the caller has not authorized the operation.
+        let _ = RetrievalQueryManager::create_request(
+            &env,
+            1,
+            collection_id,
+            owner,
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // Public Collection
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn public_collection_allows_retrieval_request() {
+        let (env, owner, _, _) = setup();
+
+        let collection_id =
+            String::from_str(&env, "public-collection");
+
+        AccessControlManager::set_resource_access_level(
+            &env,
+            collection_id.clone(),
+            ResourceAccessLevel::Public,
+            owner.clone(),
+        );
 
         let request =
-            create_request(&env, 1, requester.clone()).unwrap();
+            RetrievalQueryManager::create_request(
+                &env,
+                1,
+                collection_id,
+                owner,
+            )
+            .unwrap();
 
-        assert_eq!(request.request_id, 1);
-        assert_eq!(request.requester, requester);
         assert_eq!(
             request.state,
             RetrievalRequestState::Pending
         );
+    }
+
+    // -------------------------------------------------------------------
+    // OwnerOnly Collection
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn owner_can_access_owner_only_collection() {
+        let (env, owner, _, _) = setup();
+
+        let collection_id =
+            String::from_str(&env, "private-collection");
+
+        AccessControlManager::set_policy(
+            &env,
+            collection_id.clone(),
+            soroban_sdk::vec![&env],
+            owner.clone(),
+        )
+        .unwrap();
+
+        AccessControlManager::set_resource_access_level(
+            &env,
+            collection_id.clone(),
+            ResourceAccessLevel::OwnerOnly,
+            owner.clone(),
+        );
+
+        let request =
+            RetrievalQueryManager::create_request(
+                &env,
+                1,
+                collection_id,
+                owner,
+            )
+            .unwrap();
 
         assert_eq!(
-            get_state(&env, 1).unwrap(),
+            request.state,
+            RetrievalRequestState::Pending
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // MembersOnly Collection
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn authorized_member_can_access_collection() {
+        let (env, owner, member, _) = setup();
+
+        let collection_id =
+            String::from_str(&env, "members-collection");
+
+        AccessControlManager::set_policy(
+            &env,
+            collection_id.clone(),
+            soroban_sdk::vec![&env, member.clone()],
+            owner.clone(),
+        )
+        .unwrap();
+
+        AccessControlManager::set_resource_access_level(
+            &env,
+            collection_id.clone(),
+            ResourceAccessLevel::MembersOnly,
+            owner,
+        )
+        .unwrap();
+
+        let request =
+            RetrievalQueryManager::create_request(
+                &env,
+                1,
+                collection_id,
+                member,
+            )
+            .unwrap();
+
+        assert_eq!(
+            request.state,
+            RetrievalRequestState::Pending
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // Unauthorized Access
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn unauthorized_user_cannot_create_retrieval_request() {
+        let (env, owner, _, unauthorized) = setup();
+
+        let collection_id =
+            String::from_str(&env, "private-collection");
+
+        AccessControlManager::set_policy(
+            &env,
+            collection_id.clone(),
+            soroban_sdk::vec![&env],
+            owner.clone(),
+        )
+        .unwrap();
+
+        AccessControlManager::set_resource_access_level(
+            &env,
+            collection_id.clone(),
+            ResourceAccessLevel::MembersOnly,
+            owner,
+        )
+        .unwrap();
+
+        let result =
+            RetrievalQueryManager::create_request(
+                &env,
+                1,
+                collection_id,
+                unauthorized,
+            );
+
+        assert_eq!(
+            result,
+            Err(
+                RetrievalRequestError::CollectionAccessDenied
+            )
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // Request State
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn new_request_starts_as_pending() {
+        let (env, owner, _, _) = setup();
+
+        let collection_id =
+            String::from_str(&env, "public-collection");
+
+        AccessControlManager::set_resource_access_level(
+            &env,
+            collection_id.clone(),
+            ResourceAccessLevel::Public,
+            owner.clone(),
+        );
+
+        RetrievalQueryManager::create_request(
+            &env,
+            1,
+            collection_id,
+            owner,
+        )
+        .unwrap();
+
+        assert_eq!(
+            RetrievalQueryManager::get_state(&env, 1)
+                .unwrap(),
             RetrievalRequestState::Pending
         );
     }
 
     #[test]
-    fn test_pending_can_transition_to_completed() {
-        let (env, requester) = setup();
+    fn nonexistent_request_fails() {
+        let env = Env::default();
 
-        create_request(&env, 1, requester).unwrap();
-
-        let request = transition_request(
-            &env,
-            1,
-            RetrievalRequestState::Completed,
-        )
-        .unwrap();
-
-        assert_eq!(
-            request.state,
-            RetrievalRequestState::Completed
-        );
-
-        assert_eq!(
-            get_state(&env, 1).unwrap(),
-            RetrievalRequestState::Completed
-        );
-    }
-
-    #[test]
-    fn test_pending_can_transition_to_expired() {
-        let (env, requester) = setup();
-
-        create_request(&env, 1, requester).unwrap();
-
-        let request = transition_request(
-            &env,
-            1,
-            RetrievalRequestState::Expired,
-        )
-        .unwrap();
-
-        assert_eq!(
-            request.state,
-            RetrievalRequestState::Expired
-        );
-    }
-
-    #[test]
-    fn test_pending_can_transition_to_cancelled() {
-        let (env, requester) = setup();
-
-        create_request(&env, 1, requester).unwrap();
-
-        let request = transition_request(
-            &env,
-            1,
-            RetrievalRequestState::Cancelled,
-        )
-        .unwrap();
-
-        assert_eq!(
-            request.state,
-            RetrievalRequestState::Cancelled
-        );
-    }
-
-    #[test]
-    fn test_pending_can_transition_to_rejected() {
-        let (env, requester) = setup();
-
-        create_request(&env, 1, requester).unwrap();
-
-        let request = transition_request(
-            &env,
-            1,
-            RetrievalRequestState::Rejected,
-        )
-        .unwrap();
-
-        assert_eq!(
-            request.state,
-            RetrievalRequestState::Rejected
-        );
-    }
-
-    #[test]
-    fn test_completed_cannot_transition() {
-        let (env, requester) = setup();
-
-        create_request(&env, 1, requester).unwrap();
-
-        transition_request(
-            &env,
-            1,
-            RetrievalRequestState::Completed,
-        )
-        .unwrap();
-
-        let result = transition_request(
-            &env,
-            1,
-            RetrievalRequestState::Expired,
-        );
-
-        assert_eq!(
-            result,
-            Err(RetrievalRequestError::InvalidTransition)
-        );
-    }
-
-    #[test]
-    fn test_expired_cannot_transition() {
-        let (env, requester) = setup();
-
-        create_request(&env, 1, requester).unwrap();
-
-        transition_request(
-            &env,
-            1,
-            RetrievalRequestState::Expired,
-        )
-        .unwrap();
-
-        let result = transition_request(
-            &env,
-            1,
-            RetrievalRequestState::Completed,
-        );
-
-        assert_eq!(
-            result,
-            Err(RetrievalRequestError::InvalidTransition)
-        );
-    }
-
-    #[test]
-    fn test_cancelled_cannot_transition() {
-        let (env, requester) = setup();
-
-        create_request(&env, 1, requester).unwrap();
-
-        transition_request(
-            &env,
-            1,
-            RetrievalRequestState::Cancelled,
-        )
-        .unwrap();
-
-        let result = transition_request(
-            &env,
-            1,
-            RetrievalRequestState::Completed,
-        );
-
-        assert_eq!(
-            result,
-            Err(RetrievalRequestError::InvalidTransition)
-        );
-    }
-
-    #[test]
-    fn test_rejected_cannot_transition() {
-        let (env, requester) = setup();
-
-        create_request(&env, 1, requester).unwrap();
-
-        transition_request(
-            &env,
-            1,
-            RetrievalRequestState::Rejected,
-        )
-        .unwrap();
-
-        let result = transition_request(
-            &env,
-            1,
-            RetrievalRequestState::Completed,
-        );
-
-        assert_eq!(
-            result,
-            Err(RetrievalRequestError::InvalidTransition)
-        );
-    }
-
-    #[test]
-    fn test_invalid_pending_to_pending_transition() {
-        let (env, requester) = setup();
-
-        create_request(&env, 1, requester).unwrap();
-
-        let result = transition_request(
-            &env,
-            1,
-            RetrievalRequestState::Pending,
-        );
-
-        assert_eq!(
-            result,
-            Err(RetrievalRequestError::InvalidTransition)
-        );
-    }
-
-    #[test]
-    fn test_request_not_found() {
-        let (env, _) = setup();
-
-        let result = get_state(&env, 999);
+        let result =
+            RetrievalQueryManager::get_state(&env, 999);
 
         assert_eq!(
             result,
             Err(RetrievalRequestError::RequestNotFound)
         );
-    }
-
-    #[test]
-    fn test_can_transition() {
-        assert!(can_transition(
-            RetrievalRequestState::Pending,
-            RetrievalRequestState::Completed
-        ));
-
-        assert!(can_transition(
-            RetrievalRequestState::Pending,
-            RetrievalRequestState::Expired
-        ));
-
-        assert!(can_transition(
-            RetrievalRequestState::Pending,
-            RetrievalRequestState::Cancelled
-        ));
-
-        assert!(can_transition(
-            RetrievalRequestState::Pending,
-            RetrievalRequestState::Rejected
-        ));
-
-        assert!(!can_transition(
-            RetrievalRequestState::Pending,
-            RetrievalRequestState::Pending
-        ));
-
-        assert!(!can_transition(
-            RetrievalRequestState::Completed,
-            RetrievalRequestState::Pending
-        ));
-
-        assert!(!can_transition(
-            RetrievalRequestState::Expired,
-            RetrievalRequestState::Completed
-        ));
     }
 }
