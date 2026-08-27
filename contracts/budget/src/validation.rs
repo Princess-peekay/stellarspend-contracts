@@ -1,19 +1,18 @@
-use soroban_sdk::contracterror;
+use crate::Error;
 
-/// Errors raised by validation.
-#[contracterror]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Error {
-    /// Amount must be non-negative.
-    InvalidAmount = 1,
-    /// Contract has not been initialized.
-    NotInitialized = 2,
+/// Validates a budget amount: must be strictly positive.
+pub fn validate_amount(amount: i128) -> Result<(), Error> {
+    if amount <= 0 {
+        Err(Error::InvalidAmount)
+    } else {
+        Ok(())
+    }
 }
 
-/// Validates a financial amount.
-pub fn validate_amount(amount: i128) -> Result<(), Error> {
-    if amount < 0 {
-        Err(Error::InvalidAmount)
+/// Validates that a budget's end date is strictly after its start date.
+pub fn validate_date_range(start_date: u64, end_date: u64) -> Result<(), Error> {
+    if end_date <= start_date {
+        Err(Error::InvalidDateRange)
     } else {
         Ok(())
     }

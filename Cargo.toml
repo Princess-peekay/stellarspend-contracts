@@ -37,6 +37,7 @@ members = [
   "contracts/activity-feed",
   "contracts/zk-verifier",
   "contracts/refunds",
+  "contracts/rag",
 ]
 resolver = "2"
 

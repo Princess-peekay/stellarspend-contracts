@@ -1,19 +1,7 @@
-use soroban_sdk::contracterror;
-
-/// Errors raised by validation.
-#[contracterror]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Error {
-    /// Amount must be non-negative.
-    InvalidAmount = 1,
-    /// Contract has not been initialized.
-    NotInitialized = 2,
-}
-
-/// Validates a financial amount.
-pub fn validate_amount(amount: i128) -> Result<(), Error> {
-    if amount < 0 {
-        Err(Error::InvalidAmount)
+/// Validates a financial amount: must be strictly positive.
+pub fn validate_amount(amount: i128) -> Result<(), &'static str> {
+    if amount <= 0 {
+        Err("amount must be positive")
     } else {
         Ok(())
     }
