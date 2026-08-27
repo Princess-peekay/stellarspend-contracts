@@ -1,4 +1,11 @@
-use soroban_sdk::{contracttype, Env, String, Symbol};
+use soroban_sdk::{contracttype, Address, Env, String, Vec};
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Document {
+    pub id: u64,
+    pub owner: Address,
+}
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -11,36 +18,32 @@ pub struct Chunk {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ChunkError {
-    VersionMismatch,
-    InvalidChunkId,
+pub enum OwnershipError {
+    Unauthorized,
+    DocumentNotFound,
 }
 
-pub struct ChunkManager;
+pub struct ChunkOwnershipManager;
 
-impl ChunkManager {
-    /// Associates or updates a chunk ensuring it references the correct document version.
-    /// Rejects modifications if the target version does not match the expected active version.
-    pub fn upsert_chunk(
+impl ChunkOwnershipManager {
+    /// Validates that the caller is either the document owner or an authorized administrator,
+    /// requiring cryptographic authorization from the caller.
+    pub fn verify_chunk_operation(
         env: &Env,
-        existing_chunk: Option<Chunk>,
-        new_id: u64,
-        document_id: u64,
-        target_version: u32,
-        content: String,
-    ) -> Result<Chunk, ChunkError> {
-        if let Some(ref chunk) = existing_chunk {
-            // Ensure old chunks remain immutable; reject mismatched document versions
-            if chunk.version != target_version || chunk.document_id != document_id {
-                return Err(ChunkError::VersionMismatch);
-            }
+        caller: &Address,
+        document: &Document,
+        authorized_admins: &Vec<Address>,
+    ) -> Result<(), OwnershipError> {
+        // Enforce Soroban host authentication for the caller
+        caller.require_auth();
+
+        let is_owner = caller == &document.owner;
+        let is_admin = authorized_admins.contains(caller.clone());
+
+        if !is_owner && !is_admin {
+            return Err(OwnershipError::Unauthorized);
         }
 
-        Ok(Chunk {
-            id: new_id,
-            document_id,
-            version: target_version,
-            content,
-        })
+        Ok(())
     }
 }
