@@ -21,6 +21,7 @@ pub enum Error {
 }
 
 #[contract]
+/// Entry point for the delegation contract.
 pub struct Contract;
 
 #[contractimpl]
