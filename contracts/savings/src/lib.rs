@@ -9,6 +9,7 @@ pub mod types;
 pub mod validation;
 
 /// Typed errors for the savings contract.
+/// Typed errors for the savings contract.
 #[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -22,6 +23,7 @@ pub enum Error {
     InsufficientBalance = 4,
 }
 
+/// Savings contract entrypoint.
 #[contract]
 pub struct Contract;
 
