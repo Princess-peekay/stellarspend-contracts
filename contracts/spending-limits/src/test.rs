@@ -83,15 +83,17 @@ mod tests {
 
     #[test]
     fn record_spend_requires_the_user_to_authorize() {
-        let (env, client, _admin) = setup();
+        // record_spend calls user.require_auth() before any state read, so
+        // we can verify the auth gate without needing a limit already set.
+        // We use a fresh env that never calls mock_all_auths.
+        let env = Env::default();
+        let contract_id = env.register(Contract, ());
+        let client = ContractClient::new(&env, &contract_id);
         let user = Address::generate(&env);
         let xlm = asset(&env);
-        client.set_limit(&user, &xlm, &100, &weekly(&env));
 
-        // Fresh env with no mocked auths for the record_spend call.
-        let env2 = Env::default();
-        let client2 = ContractClient::new(&env2, &client.address);
-        let result = client2.try_record_spend(&user, &xlm, &10);
+        // No auth has been granted — record_spend must be rejected.
+        let result = client.try_record_spend(&user, &xlm, &10);
         assert!(result.is_err());
     }
 
