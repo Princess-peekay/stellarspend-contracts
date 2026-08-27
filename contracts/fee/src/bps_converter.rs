@@ -1,10 +1,10 @@
-/// Converts basis points to a percentage value.
-/// 1 bps = 0.01%, so 100 bps = 1%.
+/// Converts a basis-point rate into the contract's percentage representation.
+/// One basis point is 0.01%, so callers pass and receive the raw bps value.
 pub fn bps_to_percentage(bps: u32) -> u32 {
     bps
 }
 
-/// Calculates the fee amount from a value and a basis points rate.
+/// Applies a basis-point fee rate to `amount`, where 10,000 bps equals 100%.
 pub fn apply_bps_fee(amount: i128, fee_bps: u32) -> i128 {
     (amount * fee_bps as i128) / 10_000
 }
