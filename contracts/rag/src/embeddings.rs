@@ -1,7 +1,22 @@
-use soroban_sdk::{contracttype, Env, String, Vec};
+use soroban_sdk::{contracttype, Address, Env, String, Vec};
 
+/// Maximum length of an embedding model identifier.
+pub const MAX_MODEL_IDENTIFIER_LENGTH: u32 = 128;
+
+/// Maximum length of model metadata.
 pub const MAX_MODEL_METADATA_LENGTH: u32 = 256;
 
+/// Maximum length of an embedding commitment.
+pub const MAX_COMMITMENT_LENGTH: u32 = 128;
+
+// -----------------------------------------------------------------------------
+// Embedding Model Registry (#1242)
+// -----------------------------------------------------------------------------
+
+/// A registered embedding model.
+///
+/// Models are identified by a unique `model_id` and human-readable
+/// identifier. Metadata is bounded to prevent unbounded storage.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EmbeddingModel {
@@ -11,48 +26,82 @@ pub struct EmbeddingModel {
     pub active: bool,
 }
 
+/// ---------------------------------------------------------------------------
+/// Embedding Commitment (#1241)
+/// ---------------------------------------------------------------------------
+///
+/// Represents an immutable commitment to an embedding generated off-chain.
+///
+/// The contract never generates or stores the actual embedding. It only
+/// stores the commitment and the metadata required to identify it.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct EmbeddingRecord {
-    pub commitment: Vec<u8>,
+pub struct EmbeddingCommitment {
+    pub chunk_id: u64,
     pub model_id: u64,
-    pub chunk_version: u64,
+    pub version: u64,
+    pub commitment: Vec<u8>,
 }
 
+/// Errors produced by the embedding module.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EmbeddingError {
-    DuplicateModel,
+    Unauthorized,
+    ModelIdentifierTooLong,
     MetadataTooLong,
+    CommitmentTooLong,
+    DuplicateModel,
     ModelNotFound,
+    ModelInactive,
+    CommitmentAlreadyExists,
+    CommitmentNotFound,
 }
 
+/// Storage keys used by the embedding registry and commitment system.
 #[contracttype]
 pub enum EmbeddingKey {
+    // Model registry
     Model(u64),
     ModelIdentifier(String),
     ModelCount,
-    Record(u64),
-    RecordCount,
+
+    // Embedding commitments
+    Commitment {
+        chunk_id: u64,
+        version: u64,
+    },
 }
 
-/// Registers a supported embedding model.
+// -----------------------------------------------------------------------------
+// Model Registry
+// -----------------------------------------------------------------------------
+
+/// Registers a new embedding model.
 ///
-/// Duplicate identifiers are rejected and model metadata is bounded.
+/// Model identifiers must be unique and metadata must remain bounded.
+///
+/// The caller must be authenticated. The existing RAG authorization system
+/// should additionally restrict this operation to administrators.
 pub fn register_model(
     env: &Env,
+    caller: Address,
     identifier: String,
     metadata: String,
 ) -> Result<u64, EmbeddingError> {
+    caller.require_auth();
+
+    if identifier.len() > MAX_MODEL_IDENTIFIER_LENGTH {
+        return Err(EmbeddingError::ModelIdentifierTooLong);
+    }
+
     if metadata.len() > MAX_MODEL_METADATA_LENGTH {
         return Err(EmbeddingError::MetadataTooLong);
     }
 
-    if env
-        .storage()
-        .persistent()
-        .has(&EmbeddingKey::ModelIdentifier(identifier.clone()))
-    {
+    let identifier_key = EmbeddingKey::ModelIdentifier(identifier.clone());
+
+    if env.storage().persistent().has(&identifier_key) {
         return Err(EmbeddingError::DuplicateModel);
     }
 
@@ -71,7 +120,7 @@ pub fn register_model(
 
     env.storage()
         .persistent()
-        .set(&EmbeddingKey::ModelIdentifier(identifier), &model_id);
+        .set(&identifier_key, &model_id);
 
     env.storage()
         .persistent()
@@ -80,11 +129,18 @@ pub fn register_model(
     Ok(model_id)
 }
 
-/// Retrieves a registered embedding model.
+/// Retrieves a registered model by ID.
 pub fn get_model(env: &Env, model_id: u64) -> Option<EmbeddingModel> {
     env.storage()
         .persistent()
         .get(&EmbeddingKey::Model(model_id))
+}
+
+/// Retrieves a model ID by its unique identifier.
+pub fn get_model_id(env: &Env, identifier: String) -> Option<u64> {
+    env.storage()
+        .persistent()
+        .get(&EmbeddingKey::ModelIdentifier(identifier))
 }
 
 /// Returns whether a registered model is active.
@@ -98,10 +154,88 @@ pub fn get_model_status(
     }
 }
 
-/// Returns the total number of registered models.
+/// Returns the number of registered models.
 pub fn get_model_count(env: &Env) -> u64 {
     env.storage()
         .persistent()
         .get(&EmbeddingKey::ModelCount)
         .unwrap_or(0)
+}
+
+// -----------------------------------------------------------------------------
+// Embedding Commitments + Versioning
+// -----------------------------------------------------------------------------
+
+/// Registers an immutable embedding commitment.
+///
+/// A commitment is uniquely identified by:
+///
+///     chunk_id + version
+///
+/// Once a commitment exists for a chunk/version pair, it cannot be replaced.
+///
+/// The embedding itself is generated off-chain. Only its commitment is
+/// recorded on-chain.
+pub fn register_commitment(
+    env: &Env,
+    caller: Address,
+    chunk_id: u64,
+    model_id: u64,
+    version: u64,
+    commitment: Vec<u8>,
+) -> Result<(), EmbeddingError> {
+    caller.require_auth();
+
+    if commitment.len() > MAX_COMMITMENT_LENGTH {
+        return Err(EmbeddingError::CommitmentTooLong);
+    }
+
+    let model = match get_model(env, model_id) {
+        Some(model) => model,
+        None => return Err(EmbeddingError::ModelNotFound),
+    };
+
+    if !model.active {
+        return Err(EmbeddingError::ModelInactive);
+    }
+
+    let key = EmbeddingKey::Commitment {
+        chunk_id,
+        version,
+    };
+
+    // Never overwrite a historical commitment.
+    if env.storage().persistent().has(&key) {
+        return Err(EmbeddingError::CommitmentAlreadyExists);
+    }
+
+    let embedding = EmbeddingCommitment {
+        chunk_id,
+        model_id,
+        version,
+        commitment,
+    };
+
+    env.storage()
+        .persistent()
+        .set(&key, &embedding);
+
+    Ok(())
+}
+
+/// Retrieves the commitment for a specific chunk and version.
+///
+/// Historical records remain available indefinitely unless explicitly
+/// removed by a future storage policy.
+pub fn get_commitment(
+    env: &Env,
+    chunk_id: u64,
+    version: u64,
+) -> Option<EmbeddingCommitment> {
+    let key = EmbeddingKey::Commitment {
+        chunk_id,
+        version,
+    };
+
+    env.storage().persistent().get(&key)
 }
