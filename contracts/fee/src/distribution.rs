@@ -6,6 +6,7 @@ pub struct DistributionConfig {
 }
 
 impl DistributionConfig {
+    /// Validates that the configured distribution shares add up to 100%.
     pub fn validate(&self) -> Result<(), &'static str> {
         let total =
             self.treasury_bps +
@@ -27,6 +28,7 @@ pub struct DistributionResult {
     pub stakeholder: u64,
 }
 
+/// Distributes an amount of collected fees across treasury, protocol, and stakeholder shares.
 pub fn distribute_fees(
     amount: u64,
     config: &DistributionConfig,
