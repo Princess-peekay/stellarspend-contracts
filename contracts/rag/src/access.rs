@@ -600,3 +600,61 @@ mod tests {
         );
     }
 }
+use soroban_sdk::{contracttype, Address, Env, Vec};
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChunkAccessPolicy {
+    pub chunk_id: u64,
+    pub is_restricted: bool,
+    pub allowed_viewers: Vec<Address>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AccessError {
+    AccessDenied,
+}
+
+pub struct ChunkAccessManager;
+
+impl ChunkAccessManager {
+    /// Determines deterministically whether a caller is authorized to access a specific chunk.
+    pub fn verify_chunk_access(
+        env: &Env,
+        caller: &Address,
+        policy: &ChunkAccessPolicy,
+    ) -> Result<(), AccessError> {
+        // If the chunk is not restricted, allow open access
+        if !policy.is_restricted {
+            return Ok(());
+        }
+
+        // If restricted, check if the caller's address is explicitly permitted in the policy whitelist
+        if policy.allowed_viewers.contains(caller.clone()) {
+            return Ok(());
+        }
+
+        Err(AccessError::AccessDenied)
+    }
+
+    /// Filters a collection of chunk IDs, retaining only those for which the caller has valid access.
+    pub fn filter_authorized_chunks(
+        env: &Env,
+        caller: &Address,
+        chunk_ids: &Vec<u64>,
+        get_policy_fn: impl Fn(&Env, u64) -> Option<ChunkAccessPolicy>,
+    ) -> Vec<u64> {
+        let mut authorized_vec = Vec::new(env);
+
+        for chunk_id in chunk_ids.iter() {
+            if let Some(policy) = get_policy_fn(env, chunk_id) {
+                if Self::verify_chunk_access(env, caller, &policy).is_ok() {
+                    authorized_vec.push_back(chunk_id);
+                }
+            }
+        }
+
+        authorized_vec
+    }
+}
