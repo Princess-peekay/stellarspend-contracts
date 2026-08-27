@@ -49,7 +49,10 @@ pub struct EscrowContract;
 #[contractimpl]
 impl EscrowContract {
 
-    /// Lock `amount` tokens in escrow until `unlock_ts`.
+    /// Estimates the gas cost of locking `amount` tokens in escrow until `unlock_ts`.
+    ///
+    /// The estimate covers depositor authorization, config lookup, token transfer,
+    /// one packed persistent storage write, and lock event emission.
     ///
     /// `escrow_id` is chosen by the depositor — use a monotonic counter
     /// or a hash of (depositor, beneficiary, nonce) off-chain.
@@ -100,7 +103,10 @@ impl EscrowContract {
         });
     }
 
-    /// Release escrowed funds to the beneficiary once `unlock_ts` has passed.
+    /// Estimates the gas cost of releasing escrowed funds after `unlock_ts`.
+    ///
+    /// The estimate covers one escrow storage read, config lookup, persistent
+    /// storage removal, token transfer to the beneficiary, and release event emission.
     /// Anyone may call this — no auth required (funds go to the beneficiary).
     pub fn release(env: Env, depositor: Address, escrow_id: u64) {
         let key = EscrowKey::Entry(depositor, escrow_id);
@@ -132,7 +138,7 @@ impl EscrowContract {
         });
     }
 
-    /// View an escrow entry without modifying state.
+    /// Estimates the gas cost of reading an escrow entry without modifying state.
     pub fn get_escrow(env: Env, depositor: Address, escrow_id: u64) -> Option<EscrowEntry> {
         env.storage().persistent()
             .get(&EscrowKey::Entry(depositor, escrow_id))
