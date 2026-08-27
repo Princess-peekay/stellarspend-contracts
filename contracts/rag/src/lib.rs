@@ -4,10 +4,12 @@ use soroban_sdk::{contract, contractimpl, Env};
 mod collections;
 mod access;
 mod documents;
+mod verification;
 
 pub use collections::*;
 pub use access::*;
 pub use documents::*;
+pub use verification::*;
 
 #[contract]
 pub struct RagContract;
