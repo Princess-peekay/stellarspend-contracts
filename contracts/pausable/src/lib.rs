@@ -20,6 +20,7 @@ pub enum Error {
     InvalidAmount = 3,
 }
 
+/// Pausable contract entrypoint.
 #[contract]
 pub struct Contract;
 
