@@ -386,6 +386,7 @@ pub fn verify_chunk_binding(
 ) -> Result<bool, EmbeddingError> {
     let stored = get_commitment(env, chunk_id, version)
         .ok_or(EmbeddingError::CommitmentNotFound)?;
+        //Addition may come
 
     Ok(stored.chunk_id == chunk_id)
 }
