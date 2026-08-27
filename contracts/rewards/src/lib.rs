@@ -1,6 +1,8 @@
 #![no_std]
 
-use soroban_sdk::{contract, contracterror, contractimpl, Address, Env};
+extern crate alloc;
+
+use soroban_sdk::{contract, contracterror, contractimpl, Address, Env, Vec};
 
 mod storage;
 #[cfg(test)]
@@ -8,6 +10,7 @@ mod test;
 pub mod types;
 pub mod validation;
 
+/// Typed errors for the rewards contract.
 /// Typed errors for the rewards contract.
 #[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -20,6 +23,7 @@ pub enum Error {
     InvalidAmount = 3,
 }
 
+/// Rewards contract entrypoint.
 #[contract]
 pub struct Contract;
 
@@ -52,5 +56,20 @@ impl Contract {
     /// Returns the current configured value.
     pub fn get_value(env: Env) -> i128 {
         storage::read_config(&env).map(|c| c.value).unwrap_or(0)
+    }
+
+    /// Returns the configured administrator, if the contract has been
+    /// initialized.
+    pub fn get_owner(env: Env) -> Option<Address> {
+        storage::owner(&env)
+    }
+
+    /// Calculates the applicable reward tier rate for `value` using the
+    /// shared tiered-rate utility (`shared::rate_curve::calculate_tiered_rate`),
+    /// so reward tier calculations stay consistent with fee and batch-rewards
+    /// rather than duplicating the tier-matching logic here (#1109).
+    pub fn calculate_tiered_rate(value: i128, tiers: Vec<shared::rate_curve::Tier>) -> i128 {
+        let tiers: alloc::vec::Vec<shared::rate_curve::Tier> = tiers.iter().collect();
+        shared::rate_curve::calculate_tiered_rate(value, &tiers)
     }
 }

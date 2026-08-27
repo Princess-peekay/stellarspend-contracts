@@ -1,6 +1,8 @@
 #![no_std]
 
-use soroban_sdk::{contract, contracterror, contractimpl, symbol_short, Address, Env, IntoVal, Symbol, Vec};
+extern crate alloc;
+
+use soroban_sdk::{contract, contracterror, contractimpl, Address, Env, Vec};
 
 mod storage;
 #[cfg(test)]
@@ -115,69 +117,18 @@ impl Contract {
         storage::read_config(&env).map(|c| c.value).unwrap_or(0)
     }
 
-    /// Distributes reward tokens to a list of recipients.
-    ///
-    /// Before processing, verifies with the `delegation` contract that `caller`
-    /// has been granted a delegation allowance covering the total reward amount.
-    /// This prevents un-authorised callers from draining rewards even if they
-    /// somehow pass the admin `require_auth` check.
-    ///
-    /// # Arguments
-    /// * `caller`              — the address authorised to trigger distribution
-    /// * `owner`               — the fund owner who granted the delegation
-    /// * `delegation_contract` — deployed address of `delegation::DelegationContract`
-    /// * `recipients`          — parallel list of recipient addresses
-    /// * `amounts`             — parallel list of token amounts (must equal `recipients` length)
-    ///
-    /// # Errors
-    /// - `Unauthorized`           — `caller` is not the stored admin
-    /// - `InvalidAmount`          — any amount is ≤ 0, or list lengths differ
-    /// - `DelegationCheckFailed`  — `check_allowance` returned false for the
-    ///                              total reward sum
-    pub fn distribute_rewards(
-        env: Env,
-        caller: Address,
-        owner: Address,
-        delegation_contract: Address,
-        recipients: Vec<Address>,
-        amounts: Vec<i128>,
-    ) -> Result<(), Error> {
-        // Auth first — no reads before this point.
-        caller.require_auth();
+    /// Returns the configured administrator, if the contract has been
+    /// initialized.
+    pub fn get_owner(env: Env) -> Option<Address> {
+        storage::owner(&env)
+    }
 
-        // Verify caller is the stored admin.
-        let config = storage::read_config(&env).ok_or(Error::Unauthorized)?;
-        if config.admin != caller {
-            return Err(Error::Unauthorized);
-        }
-
-        // Validate parallel vec lengths.
-        if recipients.len() != amounts.len() {
-            return Err(Error::InvalidAmount);
-        }
-
-        // Compute total and validate individual amounts.
-        let mut total: i128 = 0;
-        for i in 0..amounts.len() {
-            let amt = amounts.get(i).unwrap_or(0);
-            if amt <= 0 {
-                return Err(Error::InvalidAmount);
-            }
-            total = total.checked_add(amt).ok_or(Error::InvalidAmount)?;
-        }
-
-        // Cross-contract delegation gate: `caller` must have sufficient
-        // allowance granted by `owner` in the delegation contract.
-        let delegation = DelegationClient::new(delegation_contract);
-        if !delegation.check_allowance(&env, &owner, &caller, total) {
-            return Err(Error::DelegationCheckFailed);
-        }
-
-        // Emit a summary event for the batch.
-        let topics = (symbol_short!("rewards"), symbol_short!("dist"));
-        env.events()
-            .publish(topics, (caller.clone(), recipients.len(), total));
-
-        Ok(())
+    /// Calculates the applicable reward decay tier rate for `value` using the
+    /// shared tiered-rate utility (`shared::rate_curve::calculate_tiered_rate`),
+    /// so reward decay tier calculations stay consistent with fee and rewards
+    /// rather than duplicating the tier-matching logic here (#1109).
+    pub fn calculate_tiered_rate(value: i128, tiers: Vec<shared::rate_curve::Tier>) -> i128 {
+        let tiers: alloc::vec::Vec<shared::rate_curve::Tier> = tiers.iter().collect();
+        shared::rate_curve::calculate_tiered_rate(value, &tiers)
     }
 }

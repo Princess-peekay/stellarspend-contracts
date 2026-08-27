@@ -11,9 +11,11 @@ pub struct ReconciliationResult {
     pub is_reconciled: bool,
 }
 
-/// Compare the stored escrow balance against the calculated balance
-/// (total_collected - total_released). Returns a result describing any
-/// discrepancy between the two values.
+/// Reconciles fee accounting by comparing the stored escrow balance with the
+/// balance calculated from total collected fees minus total released fees.
+///
+/// The result reports both balances, their discrepancy, and whether the stored
+/// value matches the calculated accounting state.
 pub fn reconcile(env: &Env) -> ReconciliationResult {
     let stored_balance = read_escrow_balance(env);
     let total_collected = read_total_collected(env);

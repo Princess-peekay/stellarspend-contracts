@@ -4,7 +4,9 @@ use soroban_sdk::{Env, String, Symbol};
 /// Shared validation errors for simple reusable helpers.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ValidationError {
+    /// The supplied amount was negative and therefore rejected.
     NegativeAmount,
+    /// The supplied address did not match the expected Stellar format.
     InvalidAddress,
 }
 

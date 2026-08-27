@@ -1229,6 +1229,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rag"
+version = "0.1.0"
+dependencies = [
+ "shared",
+ "soroban-sdk",
+]
+
+[[package]]
 name = "rand"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1284,6 +1292,13 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
+]
+
+[[package]]
+name = "refunds"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
 ]
 
 [[package]]
@@ -1730,8 +1745,12 @@ dependencies = [
 name = "spending_rules"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
  "shared",
  "soroban-sdk",
+ "spending_categories",
+ "spending_limits",
+ "zk-verifier",
 ]
 
 [[package]]

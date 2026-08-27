@@ -13,3 +13,7 @@ shared = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+spending_limits = { path = "../spending-limits" }
+spending_categories = { path = "../spending-categories" }
+zk-verifier = { path = "../zk-verifier" }
+ed25519-dalek = "=2.2.0"

@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contracterror, contractimpl, Address, Env};
+use soroban_sdk::{contract, contracterror, contractimpl, Address, Env, Symbol};
 
 mod storage;
 #[cfg(test)]
@@ -9,17 +9,21 @@ pub mod types;
 pub mod validation;
 
 /// Typed errors for the savings contract.
+/// Typed errors for the savings contract.
 #[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     /// Contract has already been initialized.
     AlreadyInitialized = 1,
-    /// Caller is not the administrator.
-    Unauthorized = 2,
-    /// Amount validation failed.
+    /// Contract has not been initialized.
+    NotInitialized = 2,
+    /// Amount must be a strictly positive value.
     InvalidAmount = 3,
+    /// Withdrawal amount exceeds the caller's current balance.
+    InsufficientBalance = 4,
 }
 
+/// Savings contract entrypoint.
 #[contract]
 pub struct Contract;
 
@@ -31,26 +35,38 @@ impl Contract {
             return Err(Error::AlreadyInitialized);
         }
         admin.require_auth();
-        storage::write_config(&env, &types::Config { admin, value: 0 });
+        storage::write_config(&env, &types::Config { admin });
         Ok(())
     }
 
-    /// Updates the contract value after authenticating the administrator.
-    pub fn set_value(env: Env, admin: Address, value: i128) -> Result<(), Error> {
-        admin.require_auth();
-        if value < 0 {
-            return Err(Error::InvalidAmount);
-        }
-        let current = storage::read_config(&env).ok_or(Error::Unauthorized)?;
-        if current.admin != admin {
-            return Err(Error::Unauthorized);
-        }
-        storage::write_config(&env, &types::Config { admin, value });
+    /// Deposits `amount` of `asset` into `user`'s savings balance. This
+    /// contract tracks internal accounting only — it does not itself move
+    /// any tokens on `user`'s behalf; callers are responsible for the
+    /// corresponding token transfer alongside this call.
+    pub fn deposit(env: Env, user: Address, amount: i128, asset: Symbol) -> Result<(), Error> {
+        user.require_auth();
+        validation::validate_amount(amount)?;
+
+        let balance = storage::read_balance(&env, &user, &asset) + amount;
+        storage::write_balance(&env, &user, &asset, balance);
         Ok(())
     }
 
-    /// Returns the current configured value.
-    pub fn get_value(env: Env) -> i128 {
-        storage::read_config(&env).map(|c| c.value).unwrap_or(0)
+    /// Withdraws `amount` of `asset` from `user`'s savings balance.
+    pub fn withdraw(env: Env, user: Address, amount: i128, asset: Symbol) -> Result<(), Error> {
+        user.require_auth();
+        validation::validate_amount(amount)?;
+
+        let current = storage::read_balance(&env, &user, &asset);
+        if amount > current {
+            return Err(Error::InsufficientBalance);
+        }
+        storage::write_balance(&env, &user, &asset, current - amount);
+        Ok(())
+    }
+
+    /// Returns `user`'s current balance for `asset`.
+    pub fn get_balance(env: Env, user: Address, asset: Symbol) -> i128 {
+        storage::read_balance(&env, &user, &asset)
     }
 }

@@ -25,7 +25,7 @@ pub struct Contract;
 
 #[contractimpl]
 impl Contract {
-    /// Initializes the contract with an administrator.
+    /// Initializes escrow-v2 storage with the authenticated administrator.
     pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
         if storage::read_config(&env).is_some() {
             return Err(Error::AlreadyInitialized);
@@ -35,7 +35,7 @@ impl Contract {
         Ok(())
     }
 
-    /// Updates the contract value after authenticating the administrator.
+    /// Updates the stored escrow-v2 value after authenticating the administrator.
     pub fn set_value(env: Env, admin: Address, value: i128) -> Result<(), Error> {
         admin.require_auth();
         if value < 0 {
@@ -49,7 +49,7 @@ impl Contract {
         Ok(())
     }
 
-    /// Returns the current configured value.
+    /// Returns the current configured escrow-v2 value, or zero if uninitialized.
     pub fn get_value(env: Env) -> i128 {
         storage::read_config(&env).map(|c| c.value).unwrap_or(0)
     }
