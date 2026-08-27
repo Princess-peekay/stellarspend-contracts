@@ -20,6 +20,7 @@ pub enum Error {
     InvalidAmount = 3,
 }
 
+/// Multisig contract entrypoint.
 #[contract]
 pub struct Contract;
 
