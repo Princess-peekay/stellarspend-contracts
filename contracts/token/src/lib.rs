@@ -20,12 +20,21 @@ pub enum Error {
     InvalidAmount = 3,
 }
 
+/// The token contract entry point.
+///
+/// All public methods below are exported as contract functions.
 #[contract]
 pub struct Contract;
 
 #[contractimpl]
 impl Contract {
     /// Initializes the contract with an administrator.
+    ///
+    /// Requires authorization from `admin` and sets the stored value to `0`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::AlreadyInitialized`] if a config is already stored.
     pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
         if storage::read_config(&env).is_some() {
             return Err(Error::AlreadyInitialized);
@@ -36,6 +45,15 @@ impl Contract {
     }
 
     /// Updates the contract value after authenticating the administrator.
+    ///
+    /// Requires authorization from `admin`, which must match the stored
+    /// administrator.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidAmount`] if `value` is negative, or
+    /// [`Error::Unauthorized`] if the contract is uninitialized or `admin` is
+    /// not the stored administrator.
     pub fn set_value(env: Env, admin: Address, value: i128) -> Result<(), Error> {
         admin.require_auth();
         if value < 0 {
@@ -50,6 +68,9 @@ impl Contract {
     }
 
     /// Returns the current configured value.
+    ///
+    /// Returns `0` when the contract has not been initialized. Requires no
+    /// authorization.
     pub fn get_value(env: Env) -> i128 {
         storage::read_config(&env).map(|c| c.value).unwrap_or(0)
     }
