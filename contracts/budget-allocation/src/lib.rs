@@ -20,6 +20,7 @@ pub enum Error {
     InvalidAmount = 3,
 }
 
+/// Soroban contract for managing a configured budget allocation value.
 #[contract]
 pub struct Contract;
 
