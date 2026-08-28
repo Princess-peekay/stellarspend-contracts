@@ -32,6 +32,7 @@ use crate::{Config, DataKey, StakeEntry, StakingContract};
 /// Pass `override_reward = 0` to use the automatic time-weighted calculation.
 /// Pass a positive value to distribute a fixed bonus on top of the calculated reward.
 pub struct RewardRecipient {
+    /// Address of the staker to credit.
     pub staker:          Address,
     /// Extra tokens to credit on top of the calculated reward (0 = none)
     pub bonus_amount:    i128,
@@ -39,6 +40,20 @@ pub struct RewardRecipient {
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
 
+/// Batch reward distributor for the staking contract.
+///
+/// # Reward formula
+///
+/// Rewards here are **time-weighted and undecayed**. Each staker's reward is
+/// delegated to `StakingContract::compute_reward(balance, staked_at, now,
+/// reward_rate)`, which accrues on the stake held since `staked_at` at the
+/// configured `reward_rate`; the same stake held twice as long earns twice as
+/// much. No decay factor, half-life or age discount is applied anywhere in
+/// this module.
+///
+/// The only time-based reset is that crediting a staker sets `staked_at =
+/// now`, so the reward clock restarts from the distribution and accrued time
+/// is never counted twice.
 #[contract]
 pub struct BatchRewardContract;
 
@@ -52,6 +67,33 @@ impl BatchRewardContract {
     /// `bonus_amounts` must be the same length as `stakers`; pass a vec of
     /// zeros if no bonuses are needed. Using parallel vecs avoids the cost of
     /// encoding a Vec of structs in Soroban's XDR type system.
+    ///
+    /// # Formula
+    ///
+    /// For each staker:
+    ///
+    /// ```text
+    /// time_reward = compute_reward(balance, staked_at, now, reward_rate)   // 0 if balance == 0
+    /// credited    = time_reward + bonus
+    /// balance    += credited
+    /// staked_at   = now                                                    // reward clock reset
+    /// ```
+    ///
+    /// The accrual is linear in elapsed time and **undecayed** — no half-life
+    /// or age discount is applied. Setting `staked_at = now` on credit is what
+    /// stops the same elapsed time being paid for twice; it is a reset, not a
+    /// decay.
+    ///
+    /// A staker is skipped without a write when they have neither balance nor
+    /// bonus, or when `credited` comes out non-positive.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `admin` has not authorized the call, if `stakers` and
+    /// `bonus_amounts` differ in length, if `stakers` is empty, if the
+    /// staking contract has not been initialised, or if `admin` is not the
+    /// configured admin. Any of these aborts the entire batch — no staker is
+    /// credited.
     pub fn distribute_rewards(
         env:           Env,
         admin:         Address,
@@ -138,6 +180,22 @@ impl BatchRewardContract {
     ///
     /// Useful for off-chain tooling to estimate batch costs before calling
     /// `distribute_rewards`. Returns parallel vec of reward amounts.
+    ///
+    /// # Formula
+    ///
+    /// Applies the same undecayed, time-weighted accrual as
+    /// [`BatchRewardContract::distribute_rewards`] —
+    /// `compute_reward(balance, staked_at, now, reward_rate)`, or `0` for a
+    /// staker with no balance — evaluated at the current ledger timestamp.
+    ///
+    /// Bonuses are **not** included, so a preview is the accrual component
+    /// only. The value grows with elapsed time, so a preview taken now
+    /// understates what the same call would credit later.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the staking contract has not been initialised. Requires no
+    /// authorization and writes nothing.
     pub fn preview_rewards(
         env:     Env,
         stakers: Vec<Address>,
@@ -215,12 +273,34 @@ impl From<BatchRewardsError> for soroban_sdk::Error {
     }
 }
 
+/// Admin-operated batch payer for reward amounts decided off-chain.
+///
+/// # Reward formula
+///
+/// There is none, and that is the design: this contract transfers the exact
+/// `amount` given in each [`RewardRequest`]. No accrual, no decay, no age
+/// weighting — whatever computed the amounts did so before the call. It
+/// validates, transfers, and records what happened.
+///
+/// Contrast [`BatchRewardContract`] above, which derives each amount from
+/// stake and elapsed time.
 #[contract]
 pub struct BatchRewardsContract;
 
 #[contractimpl]
 impl BatchRewardsContract {
     /// Initializes the contract with an admin address.
+    ///
+    /// Records `admin` and zeroes the three running totals reported by
+    /// [`BatchRewardsContract::get_total_batches`],
+    /// [`BatchRewardsContract::get_total_rewards_processed`] and
+    /// [`BatchRewardsContract::get_total_volume_distributed`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the contract has already been initialized. Note that this
+    /// entry point does **not** require authorization, so whoever calls it
+    /// first becomes admin.
     pub fn initialize(env: Env, admin: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
             panic!("Contract already initialized");
@@ -237,6 +317,10 @@ impl BatchRewardsContract {
     }
 
     /// Gets the contract admin.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the contract has not been initialized.
     pub fn get_admin(env: Env) -> Address {
         env.storage()
             .instance()
@@ -245,6 +329,11 @@ impl BatchRewardsContract {
     }
 
     /// Gets the total number of reward batches processed.
+    ///
+    /// This doubles as the id of the most recent batch: batch ids are this
+    /// counter plus one, assigned at the start of each distribution.
+    ///
+    /// Returns `0` on an uninitialized contract rather than panicking.
     pub fn get_total_batches(env: Env) -> u64 {
         env.storage()
             .instance()
@@ -253,6 +342,13 @@ impl BatchRewardsContract {
     }
 
     /// Gets the total number of rewards processed.
+    ///
+    /// Counts every request **submitted**, including those that failed
+    /// validation or whose transfer was rejected. Compare against
+    /// [`BatchRewardsContract::get_total_volume_distributed`], which counts
+    /// only what actually moved.
+    ///
+    /// Returns `0` on an uninitialized contract rather than panicking.
     pub fn get_total_rewards_processed(env: Env) -> u64 {
         env.storage()
             .instance()
@@ -261,6 +357,11 @@ impl BatchRewardsContract {
     }
 
     /// Gets the total volume of rewards distributed.
+    ///
+    /// Sums the amounts of successful transfers only; failed requests
+    /// contribute nothing.
+    ///
+    /// Returns `0` on an uninitialized contract rather than panicking.
     pub fn get_total_volume_distributed(env: Env) -> i128 {
         env.storage()
             .instance()
@@ -269,6 +370,17 @@ impl BatchRewardsContract {
     }
 
     /// Sets a new admin address.
+    ///
+    /// Transfers administration in one step and emits an `admin` event with
+    /// the new address. There is no two-step accept, so an unusable
+    /// `new_admin` leaves the contract without a working administrator.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `caller` has not authorized the call, if the contract has
+    /// not been initialized, or with
+    /// [`BatchRewardsError::Unauthorized`] if `caller` is not the current
+    /// admin.
     pub fn set_admin(env: Env, caller: Address, new_admin: Address) {
         caller.require_auth();
         Self::require_admin(&env, &caller);
@@ -288,6 +400,37 @@ impl BatchRewardsContract {
     ///
     /// # Returns
     /// A `BatchRewardResult` containing the results of the distribution
+    ///
+    /// # Formula
+    ///
+    /// None is applied. Each recipient receives exactly `reward.amount` as
+    /// submitted — no decay, no time weighting, no proportional scaling. If
+    /// amounts should fall off with age or stake, that has to happen before
+    /// the call.
+    ///
+    /// # Partial failure
+    ///
+    /// Individual requests fail independently: an invalid amount, an invalid
+    /// recipient, or a rejected transfer records a
+    /// [`RewardResult::Failure`] with an error code, emits a failure event,
+    /// and the batch continues. So a returned `BatchRewardResult` can report
+    /// successes and failures together, and the caller must read `failed`
+    /// rather than assume the whole batch landed.
+    ///
+    /// The balance check before the loop compares the caller's balance
+    /// against the sum of **all** requested amounts, including ones that will
+    /// later fail validation — so it is conservative, and a batch can be
+    /// rejected for insufficient balance even though the amounts that would
+    /// actually transfer do fit.
+    ///
+    /// # Panics
+    ///
+    /// Unlike a per-request failure, these abort the whole batch: no
+    /// authorization from `caller`, a caller who is not the admin, an empty
+    /// batch ([`BatchRewardsError::EmptyBatch`]), more than
+    /// [`MAX_BATCH_SIZE`] requests ([`BatchRewardsError::BatchTooLarge`]), or
+    /// a caller balance below the total requested
+    /// ([`BatchRewardsError::InsufficientBalance`]).
     pub fn distribute_rewards(
         env: Env,
         caller: Address,
