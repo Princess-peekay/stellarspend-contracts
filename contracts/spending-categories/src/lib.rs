@@ -26,6 +26,7 @@ pub enum Error {
     Overflow = 6,
 }
 
+/// The `spending_categories` smart contract.
 #[contract]
 pub struct Contract;
 
