@@ -1,5 +1,5 @@
 use soroban_sdk::{
-    contracterror, contracttype, Address, Env, String,
+    contracterror, contracttype, Address, Bytes, Env, String,
 };
 
 use crate::access::{
@@ -23,12 +23,21 @@ pub enum RetrievalRequestState {
 }
 
 /// Represents a persisted RAG retrieval request.
+///
+/// A retrieval request stores an on-chain commitment to the caller's
+/// query (rather than the raw query text), the requester, the target
+/// collection, and the ledger timestamp at which the query was
+/// registered.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RetrievalRequest {
     pub request_id: u64,
+    /// On-chain commitment to the query so the raw text is not stored.
+    pub query_commitment: Bytes,
     pub requester: Address,
     pub collection_id: String,
+    /// Ledger timestamp at which the query was registered.
+    pub created_at: u64,
     pub state: RetrievalRequestState,
 }
 
@@ -62,11 +71,16 @@ pub struct RetrievalQueryManager;
 impl RetrievalQueryManager {
     /// Creates a new retrieval request against a collection.
     ///
+    /// A `query_commitment` (a hash of the caller's query) is stored
+    /// on-chain rather than the raw query text. The requester, target
+    /// collection, and the current ledger timestamp are also recorded.
+    ///
     /// The caller must authenticate and have permission to access
     /// the requested collection.
     pub fn create_request(
         env: &Env,
         request_id: u64,
+        query_commitment: Bytes,
         collection_id: String,
         caller: Address,
     ) -> Result<RetrievalRequest, RetrievalRequestError> {
@@ -94,12 +108,15 @@ impl RetrievalQueryManager {
         )?;
 
         // ---------------------------------------------------------------
-        // 4. Create request in Pending state
+        // 4. Create request in Pending state, recording the commitment
+        //    and the ledger timestamp at which it was registered
         // ---------------------------------------------------------------
         let request = RetrievalRequest {
             request_id,
+            query_commitment,
             requester: caller,
             collection_id,
+            created_at: env.ledger().timestamp(),
             state: RetrievalRequestState::Pending,
         };
 
@@ -280,6 +297,7 @@ mod tests {
         let _ = RetrievalQueryManager::create_request(
             &env,
             1,
+            Bytes::from_array(&env, &[1u8; 32]),
             collection_id,
             owner,
         );
@@ -307,6 +325,7 @@ mod tests {
             RetrievalQueryManager::create_request(
                 &env,
                 1,
+                Bytes::from_array(&env, &[1u8; 32]),
                 collection_id,
                 owner,
             )
@@ -348,6 +367,7 @@ mod tests {
             RetrievalQueryManager::create_request(
                 &env,
                 1,
+                Bytes::from_array(&env, &[1u8; 32]),
                 collection_id,
                 owner,
             )
@@ -390,6 +410,7 @@ mod tests {
             RetrievalQueryManager::create_request(
                 &env,
                 1,
+                Bytes::from_array(&env, &[1u8; 32]),
                 collection_id,
                 member,
             )
@@ -432,6 +453,7 @@ mod tests {
             RetrievalQueryManager::create_request(
                 &env,
                 1,
+                Bytes::from_array(&env, &[1u8; 32]),
                 collection_id,
                 unauthorized,
             );
@@ -465,6 +487,7 @@ mod tests {
         RetrievalQueryManager::create_request(
             &env,
             1,
+            Bytes::from_array(&env, &[1u8; 32]),
             collection_id,
             owner,
         )
@@ -487,6 +510,41 @@ mod tests {
         assert_eq!(
             result,
             Err(RetrievalRequestError::RequestNotFound)
+        );
+    }
+
+    #[test]
+    fn request_records_commitment_and_timestamp() {
+        let (env, owner, _, _) = setup();
+
+        let collection_id = String::from_str(&env, "public-collection");
+
+        AccessControlManager::set_resource_access_level(
+            &env,
+            collection_id.clone(),
+            ResourceAccessLevel::Public,
+            owner.clone(),
+        );
+
+        let commitment = Bytes::from_array(&env, &[7u8; 32]);
+
+        let request = RetrievalQueryManager::create_request(
+            &env,
+            1,
+            commitment.clone(),
+            collection_id,
+            owner,
+        )
+        .unwrap();
+
+        assert_eq!(
+            request.query_commitment, commitment,
+            "the query commitment must be stored"
+        );
+        assert_eq!(
+            request.created_at,
+            env.ledger().timestamp(),
+            "the registration timestamp must be recorded"
         );
     }
 }
