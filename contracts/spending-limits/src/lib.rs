@@ -30,6 +30,7 @@ pub enum Error {
     Overflow = 8,
 }
 
+/// The `spending_limits` smart contract.
 #[contract]
 pub struct Contract;
 

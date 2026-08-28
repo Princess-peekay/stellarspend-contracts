@@ -13,6 +13,7 @@ pub enum Period {
 }
 
 impl Period {
+    /// Period length in seconds.
     pub fn seconds(&self) -> u64 {
         match self {
             Period::Daily => 86_400,
@@ -34,6 +35,8 @@ impl Period {
         }
     }
 
+    /// The index of the period bucket the current ledger timestamp falls
+    /// into, used to key each period's accumulated spend independently.
     pub fn index(&self, env: &Env) -> u64 {
         env.ledger().timestamp() / self.seconds()
     }
