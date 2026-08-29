@@ -14,6 +14,7 @@ pub struct Config {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
 pub enum DataKey {
+    /// Key for the contract's singleton [`Config`] record.
     Config,
     /// Balance for a given (user, asset) pair.
     Balance(Address, Symbol),

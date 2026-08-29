@@ -20,12 +20,17 @@ pub enum Error {
     InvalidAmount = 3,
 }
 
+/// Recurring-payment contract entrypoint: manages scheduled, repeating
+/// payment configuration between StellarSpend users.
 #[contract]
 pub struct Contract;
 
 #[contractimpl]
 impl Contract {
-    /// Initializes the contract with an administrator.
+    /// Initializes the recurring-payment contract with an
+    /// administrator. Must be called exactly once, before any other
+    /// entrypoint; fails with [`Error::AlreadyInitialized`] on a second
+    /// call.
     pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
         if storage::read_config(&env).is_some() {
             return Err(Error::AlreadyInitialized);
@@ -35,7 +40,11 @@ impl Contract {
         Ok(())
     }
 
-    /// Updates the contract value after authenticating the administrator.
+    /// Updates the recurring-payment contract's configured value after
+    /// authenticating the caller as the current administrator. Fails
+    /// with [`Error::InvalidAmount`] for a negative value, or
+    /// [`Error::Unauthorized`] if `admin` does not match the stored
+    /// administrator.
     pub fn set_value(env: Env, admin: Address, value: i128) -> Result<(), Error> {
         admin.require_auth();
         if value < 0 {
@@ -49,7 +58,8 @@ impl Contract {
         Ok(())
     }
 
-    /// Returns the current configured value.
+    /// Returns the recurring-payment contract's current configured
+    /// value, or `0` if the contract has not yet been initialized.
     pub fn get_value(env: Env) -> i128 {
         storage::read_config(&env).map(|c| c.value).unwrap_or(0)
     }
