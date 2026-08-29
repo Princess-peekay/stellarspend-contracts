@@ -1,3 +1,8 @@
+//! Tiered rate-curve utilities for StellarSpend contracts.
+//!
+//! Provides a generic mechanism for applying step-function fee or reward
+//! rates based on configurable threshold tiers. Used by budget, savings,
+//! and rewards contracts to compute amounts without floating-point arithmetic.
 use soroban_sdk::contracttype;
 
 /// A single tier boundary: any value >= `threshold` (and below the next
@@ -11,14 +16,32 @@ pub struct Tier {
     pub rate_bps: u32, // basis points, e.g. 250 = 2.50%
 }
 
-/// Calculates a result by applying the rate of whichever tier the input
-/// value falls into. Tier boundaries are inclusive of their threshold
-/// (i.e. a value exactly equal to a tier's threshold uses that tier, not
-/// the previous one).
+/// Applies a stepped (tiered) rate to `value` and returns the resulting amount.
 ///
-/// Returns 0 if `tiers` is empty, rather than panicking — callers that
-/// require at least one tier should validate that themselves with a
-/// clearer domain-specific error message.
+/// The function walks `tiers` in order (assumed sorted ascending by `threshold`)
+/// and selects the **highest** tier whose `threshold` is ≤ `value`. The selected
+/// tier's `rate_bps` (basis points, where 10 000 bps = 100 %) is then applied:
+///
+/// ```text
+/// result = value * rate_bps / 10_000
+/// ```
+///
+/// Integer division is used throughout; sub-unit remainders are truncated.
+///
+/// # Arguments
+/// * `value` — The input amount in the contract's base unit (e.g. stroops).
+/// * `tiers` — A slice of [`Tier`] values sorted ascending by `threshold`.
+///
+/// # Returns
+/// The computed amount, or `0` when `tiers` is empty (rather than panicking —
+/// callers that require at least one tier should validate that themselves with
+/// a clearer domain-specific error message).
+///
+/// # Examples
+/// ```
+/// let tiers = [Tier { threshold: 0, rate_bps: 100 }]; // 1 %
+/// assert_eq!(calculate_tiered_rate(500, &tiers), 5);
+/// ```
 pub fn calculate_tiered_rate(value: i128, tiers: &[Tier]) -> i128 {
     if tiers.is_empty() {
         return 0;
