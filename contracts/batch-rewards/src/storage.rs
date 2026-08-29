@@ -16,6 +16,7 @@ pub fn write_config(env: &Env, config: &Config) {
 }
 
 /// Returns the configured owner.
+#[allow(dead_code)]
 pub fn owner(env: &Env) -> Option<Address> {
     read_config(env).map(|c| c.admin)
 }

@@ -216,6 +216,7 @@ dependencies = [
 name = "batch_rewards"
 version = "0.1.0"
 dependencies = [
+ "delegation",
  "shared",
  "soroban-sdk",
 ]

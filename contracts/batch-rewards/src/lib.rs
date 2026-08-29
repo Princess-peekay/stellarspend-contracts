@@ -10,6 +10,10 @@ mod test;
 pub mod types;
 pub mod validation;
 
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
 /// Typed errors for the batch_rewards contract.
 #[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -20,7 +24,64 @@ pub enum Error {
     Unauthorized = 2,
     /// Amount validation failed.
     InvalidAmount = 3,
+    /// The delegate does not have sufficient allowance in the delegation
+    /// contract to cover this reward distribution.
+    DelegationCheckFailed = 4,
 }
+
+// ---------------------------------------------------------------------------
+// Cross-contract delegation client
+// ---------------------------------------------------------------------------
+
+/// Lightweight client for calling `delegation::DelegationContract::check_allowance`
+/// cross-contract.
+///
+/// Uses `env.invoke_contract` (the same low-level primitive used by the Reflector
+/// oracle adapter in `shared`) so this crate does not need to link the full
+/// delegation WASM at runtime — only the function name and ABI need to match.
+pub struct DelegationClient {
+    /// On-chain address of the deployed delegation contract.
+    pub contract_address: Address,
+}
+
+impl DelegationClient {
+    /// Creates a new client bound to `contract_address`.
+    pub fn new(contract_address: Address) -> Self {
+        Self { contract_address }
+    }
+
+    /// Calls `check_allowance` on the remote delegation contract.
+    ///
+    /// Returns `true` when `delegate` has at least `amount` of remaining
+    /// allowance granted by `owner`. Returns `false` on any failure, treating
+    /// a delegation contract that is unavailable or misconfigured as a
+    /// "no allowance" result rather than a hard abort — the caller decides
+    /// how to handle the `false` case.
+    pub fn check_allowance(
+        &self,
+        env: &Env,
+        owner: &Address,
+        delegate: &Address,
+        amount: i128,
+    ) -> bool {
+        // "check_allowance" is 15 chars — too long for symbol_short! (9-char limit).
+        // Symbol::new accepts any valid Soroban identifier string at runtime.
+        let fn_name = Symbol::new(env, "check_allowance");
+        let args = soroban_sdk::vec![
+            env,
+            owner.clone().into_val(env),
+            delegate.clone().into_val(env),
+            amount.into_val(env),
+        ];
+        let result: Result<bool, soroban_sdk::Error> =
+            env.invoke_contract(&self.contract_address, &fn_name, args);
+        result.unwrap_or(false)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Contract
+// ---------------------------------------------------------------------------
 
 #[contract]
 pub struct Contract;

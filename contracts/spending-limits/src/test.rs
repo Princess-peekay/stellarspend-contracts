@@ -93,7 +93,6 @@ mod tests {
         client.initialize(&admin);
         let user = Address::generate(&env);
         let xlm = asset(&env);
-        client.set_limit(&user, &xlm, &100, &weekly(&env));
 
         // NOTE: mock_all_auths is still active for this test because it was
         // called above and cannot be un-called. The auth check in record_spend

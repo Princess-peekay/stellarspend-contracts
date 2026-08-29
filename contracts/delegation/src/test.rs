@@ -1,31 +1,296 @@
 #[cfg(test)]
 mod tests {
-    use soroban_sdk::testutils::{Address as _, Ledger};
-    use soroban_sdk::Env;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{Address, Env};
 
-    #[test]
-    fn happy_path_environment() {
-        let env = Env::default();
-        env.ledger().set_sequence_number(1);
-        assert_eq!(env.ledger().sequence(), 1);
-    }
-    #[test]
-    fn unauthorized_boundary_placeholder() {
+    use crate::{DelegationContract, DelegationContractClient, Error};
+
+    fn make_env() -> Env {
         let env = Env::default();
         env.mock_all_auths();
-        assert!(env.ledger().timestamp() >= 0);
+        env
     }
+
+    // -----------------------------------------------------------------------
+    // set_delegation
+    // -----------------------------------------------------------------------
+
     #[test]
-    fn address_generation() {
-        let env = Env::default();
-        let _ = soroban_sdk::Address::generate(&env);
+    fn set_delegation_stores_limit() {
+        let env = make_env();
+        let contract_id = env.register(DelegationContract, ());
+        let client = DelegationContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let delegate = Address::generate(&env);
+
+        client.set_delegation(&owner, &delegate, &500_i128);
+
+        let d = client.get_delegation(&owner, &delegate).expect("delegation must exist");
+        assert_eq!(d.limit, 500);
+        assert_eq!(d.spent, 0);
     }
+
     #[test]
-    fn zero_boundary() {
-        assert_eq!(0_i128.checked_add(0), Some(0));
+    #[should_panic]
+    fn set_delegation_rejects_self_delegation() {
+        let env = make_env();
+        let contract_id = env.register(DelegationContract, ());
+        let client = DelegationContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        // [SEC-DEL-02] Self-delegation must be rejected.
+        client.set_delegation(&owner, &owner, &100_i128);
     }
+
     #[test]
-    fn overflow_boundary() {
-        assert_eq!(i128::MAX.checked_add(1), None);
+    #[should_panic]
+    fn set_delegation_rejects_zero_limit() {
+        let env = make_env();
+        let contract_id = env.register(DelegationContract, ());
+        let client = DelegationContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let delegate = Address::generate(&env);
+        // [SEC-DEL-03] Zero limit must be rejected.
+        client.set_delegation(&owner, &delegate, &0_i128);
+    }
+
+    #[test]
+    #[should_panic]
+    fn set_delegation_rejects_negative_limit() {
+        let env = make_env();
+        let contract_id = env.register(DelegationContract, ());
+        let client = DelegationContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let delegate = Address::generate(&env);
+        client.set_delegation(&owner, &delegate, &-1_i128);
+    }
+
+    #[test]
+    fn set_delegation_preserves_spent_on_limit_update() {
+        let env = make_env();
+        let contract_id = env.register(DelegationContract, ());
+        let client = DelegationContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let delegate = Address::generate(&env);
+
+        client.set_delegation(&owner, &delegate, &200_i128);
+        // consume_allowance returns () on success and panics on error.
+        client.consume_allowance(&owner, &delegate, &50_i128);
+
+        // Re-granting a higher limit must not reset spent.
+        client.set_delegation(&owner, &delegate, &500_i128);
+
+        let d = client.get_delegation(&owner, &delegate).expect("must exist");
+        assert_eq!(d.limit, 500);
+        assert_eq!(d.spent, 50, "spent must be preserved after limit update");
+    }
+
+    // -----------------------------------------------------------------------
+    // revoke_delegation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn revoke_delegation_removes_entry() {
+        let env = make_env();
+        let contract_id = env.register(DelegationContract, ());
+        let client = DelegationContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let delegate = Address::generate(&env);
+
+        client.set_delegation(&owner, &delegate, &100_i128);
+        // [SEC-DEL-04] Revoke removes the key entirely.
+        client.revoke_delegation(&owner, &delegate);
+
+        assert!(client.get_delegation(&owner, &delegate).is_none());
+    }
+
+    #[test]
+    fn revoke_delegation_is_idempotent() {
+        let env = make_env();
+        let contract_id = env.register(DelegationContract, ());
+        let client = DelegationContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let delegate = Address::generate(&env);
+
+        // Revoking a non-existent delegation must not panic.
+        client.revoke_delegation(&owner, &delegate);
+    }
+
+    // -----------------------------------------------------------------------
+    // consume_allowance
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn consume_allowance_happy_path() {
+        let env = make_env();
+        let contract_id = env.register(DelegationContract, ());
+        let client = DelegationContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let delegate = Address::generate(&env);
+
+        client.set_delegation(&owner, &delegate, &300_i128);
+        // consume_allowance returns () on success, panics on error.
+        client.consume_allowance(&owner, &delegate, &100_i128);
+        client.consume_allowance(&owner, &delegate, &100_i128);
+
+        let d = client.get_delegation(&owner, &delegate).unwrap();
+        assert_eq!(d.spent, 200);
+    }
+
+    #[test]
+    fn consume_allowance_exact_limit_succeeds() {
+        let env = make_env();
+        let contract_id = env.register(DelegationContract, ());
+        let client = DelegationContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let delegate = Address::generate(&env);
+
+        client.set_delegation(&owner, &delegate, &100_i128);
+        client.consume_allowance(&owner, &delegate, &100_i128);
+
+        let d = client.get_delegation(&owner, &delegate).unwrap();
+        assert_eq!(d.spent, 100);
+    }
+
+    #[test]
+    fn consume_allowance_exceeds_limit_returns_error() {
+        let env = make_env();
+        let contract_id = env.register(DelegationContract, ());
+        let client = DelegationContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let delegate = Address::generate(&env);
+
+        client.set_delegation(&owner, &delegate, &50_i128);
+        let result = client.try_consume_allowance(&owner, &delegate, &51_i128);
+        assert_eq!(result, Err(Ok(Error::AmountTooLarge)));
+    }
+
+    #[test]
+    fn consume_allowance_no_delegation_returns_unauthorized() {
+        // [SEC-DEL-05] Missing delegation returns Unauthorized, not NotFound.
+        let env = make_env();
+        let contract_id = env.register(DelegationContract, ());
+        let client = DelegationContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let delegate = Address::generate(&env);
+
+        let result = client.try_consume_allowance(&owner, &delegate, &1_i128);
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    }
+
+    #[test]
+    fn consume_allowance_zero_amount_returns_error() {
+        let env = make_env();
+        let contract_id = env.register(DelegationContract, ());
+        let client = DelegationContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let delegate = Address::generate(&env);
+
+        client.set_delegation(&owner, &delegate, &100_i128);
+        let result = client.try_consume_allowance(&owner, &delegate, &0_i128);
+        assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+    }
+
+    // -----------------------------------------------------------------------
+    // check_allowance
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn check_allowance_returns_true_when_sufficient() {
+        let env = make_env();
+        let contract_id = env.register(DelegationContract, ());
+        let client = DelegationContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let delegate = Address::generate(&env);
+
+        client.set_delegation(&owner, &delegate, &200_i128);
+        assert!(client.check_allowance(&owner, &delegate, &200_i128));
+    }
+
+    #[test]
+    fn check_allowance_returns_false_when_insufficient() {
+        let env = make_env();
+        let contract_id = env.register(DelegationContract, ());
+        let client = DelegationContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let delegate = Address::generate(&env);
+
+        client.set_delegation(&owner, &delegate, &100_i128);
+        client.consume_allowance(&owner, &delegate, &80_i128);
+
+        // Only 20 remaining; 21 should fail the check.
+        assert!(!client.check_allowance(&owner, &delegate, &21_i128));
+    }
+
+    #[test]
+    fn check_allowance_returns_false_when_no_delegation() {
+        let env = make_env();
+        let contract_id = env.register(DelegationContract, ());
+        let client = DelegationContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let delegate = Address::generate(&env);
+
+        assert!(!client.check_allowance(&owner, &delegate, &1_i128));
+    }
+
+    #[test]
+    fn check_allowance_returns_false_for_zero_amount() {
+        let env = make_env();
+        let contract_id = env.register(DelegationContract, ());
+        let client = DelegationContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let delegate = Address::generate(&env);
+
+        client.set_delegation(&owner, &delegate, &100_i128);
+        assert!(!client.check_allowance(&owner, &delegate, &0_i128));
+    }
+
+    #[test]
+    fn check_allowance_does_not_mutate_state() {
+        let env = make_env();
+        let contract_id = env.register(DelegationContract, ());
+        let client = DelegationContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let delegate = Address::generate(&env);
+
+        client.set_delegation(&owner, &delegate, &100_i128);
+        client.check_allowance(&owner, &delegate, &50_i128);
+        client.check_allowance(&owner, &delegate, &50_i128);
+
+        // Calling check_allowance twice must not have consumed any allowance.
+        let d = client.get_delegation(&owner, &delegate).unwrap();
+        assert_eq!(d.spent, 0, "check_allowance must not mutate spent");
+    }
+
+    // -----------------------------------------------------------------------
+    // get_delegation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn get_delegation_returns_none_for_unknown_pair() {
+        let env = make_env();
+        let contract_id = env.register(DelegationContract, ());
+        let client = DelegationContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let delegate = Address::generate(&env);
+
+        assert!(client.get_delegation(&owner, &delegate).is_none());
     }
 }

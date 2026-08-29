@@ -1,31 +1,163 @@
 #[cfg(test)]
 mod tests {
-    use soroban_sdk::testutils::{Address as _, Ledger};
-    use soroban_sdk::Env;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{vec, Address, Env};
 
-    #[test]
-    fn happy_path_environment() {
-        let env = Env::default();
-        env.ledger().set_sequence_number(1);
-        assert_eq!(env.ledger().sequence(), 1);
-    }
-    #[test]
-    fn unauthorized_boundary_placeholder() {
+    use crate::{Contract, ContractClient, Error};
+
+    fn make_env() -> Env {
         let env = Env::default();
         env.mock_all_auths();
-        assert!(env.ledger().timestamp() >= 0);
+        env
     }
-    #[test]
-    fn address_generation() {
-        let env = Env::default();
-        let _ = soroban_sdk::Address::generate(&env);
+
+    fn setup_contract(env: &Env) -> (ContractClient<'_>, Address) {
+        let contract_id = env.register(Contract, ());
+        let client = ContractClient::new(env, &contract_id);
+        let admin = Address::generate(env);
+        // client.initialize() returns () on success and panics on error.
+        client.initialize(&admin);
+        (client, admin)
     }
+
+    // -----------------------------------------------------------------------
+    // initialize
+    // -----------------------------------------------------------------------
+
     #[test]
-    fn zero_boundary() {
-        assert_eq!(0_i128.checked_add(0), Some(0));
+    fn initialize_succeeds() {
+        let env = make_env();
+        let contract_id = env.register(Contract, ());
+        let client = ContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        // Soroban client strips Result — returns () on success, panics on error.
+        client.initialize(&admin);
     }
+
     #[test]
-    fn overflow_boundary() {
-        assert_eq!(i128::MAX.checked_add(1), None);
+    fn initialize_twice_returns_error() {
+        let env = make_env();
+        let (client, admin) = setup_contract(&env);
+        let result = client.try_initialize(&admin);
+        assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
+    }
+
+    // -----------------------------------------------------------------------
+    // set_signers / get_signers / get_threshold
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn set_signers_stores_list_and_threshold() {
+        let env = make_env();
+        let (client, admin) = setup_contract(&env);
+
+        let s1 = Address::generate(&env);
+        let s2 = Address::generate(&env);
+        let s3 = Address::generate(&env);
+        let signers = vec![&env, s1.clone(), s2.clone(), s3.clone()];
+
+        // set_signers returns () on success and panics on error.
+        client.set_signers(&admin, &signers, &2u32);
+
+        assert_eq!(client.get_threshold(), 2);
+        let stored = client.get_signers();
+        assert_eq!(stored.len(), 3);
+    }
+
+    #[test]
+    fn set_signers_rejects_threshold_exceeding_signer_count() {
+        let env = make_env();
+        let (client, admin) = setup_contract(&env);
+
+        let s1 = Address::generate(&env);
+        let signers = vec![&env, s1.clone()];
+
+        let result = client.try_set_signers(&admin, &signers, &2u32);
+        assert_eq!(result, Err(Ok(Error::InvalidThreshold)));
+    }
+
+    #[test]
+    fn set_signers_rejects_duplicate_signers() {
+        let env = make_env();
+        let (client, admin) = setup_contract(&env);
+
+        let s1 = Address::generate(&env);
+        let signers = vec![&env, s1.clone(), s1.clone()];
+
+        let result = client.try_set_signers(&admin, &signers, &1u32);
+        assert_eq!(result, Err(Ok(Error::DuplicateSigner)));
+    }
+
+    #[test]
+    fn set_signers_rejects_empty_list() {
+        let env = make_env();
+        let (client, admin) = setup_contract(&env);
+
+        let signers = vec![&env];
+        let result = client.try_set_signers(&admin, &signers, &1u32);
+        assert_eq!(result, Err(Ok(Error::InvalidThreshold)));
+    }
+
+    // -----------------------------------------------------------------------
+    // set_high_value_threshold / get_high_value_threshold
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn set_high_value_threshold_stores_value() {
+        let env = make_env();
+        let (client, admin) = setup_contract(&env);
+
+        // set_high_value_threshold returns () on success and panics on error.
+        client.set_high_value_threshold(&admin, &1_000_000_i128);
+        assert_eq!(client.get_high_value_threshold(), 1_000_000_i128);
+    }
+
+    #[test]
+    fn set_high_value_threshold_rejects_negative() {
+        let env = make_env();
+        let (client, admin) = setup_contract(&env);
+
+        let result = client.try_set_high_value_threshold(&admin, &-1_i128);
+        assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+    }
+
+    // -----------------------------------------------------------------------
+    // is_signer
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn is_signer_returns_true_for_configured_signer() {
+        let env = make_env();
+        let (client, admin) = setup_contract(&env);
+
+        let s1 = Address::generate(&env);
+        let signers = vec![&env, s1.clone()];
+        client.set_signers(&admin, &signers, &1u32);
+
+        assert!(client.is_signer(&s1));
+    }
+
+    #[test]
+    fn is_signer_returns_false_for_unknown_address() {
+        let env = make_env();
+        let (client, admin) = setup_contract(&env);
+
+        let s1 = Address::generate(&env);
+        let signers = vec![&env, s1.clone()];
+        client.set_signers(&admin, &signers, &1u32);
+
+        let stranger = Address::generate(&env);
+        assert!(!client.is_signer(&stranger));
+    }
+
+    // -----------------------------------------------------------------------
+    // get_approval_count
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn get_approval_count_returns_zero_for_unknown_tx() {
+        let env = make_env();
+        let (client, _) = setup_contract(&env);
+        assert_eq!(client.get_approval_count(&99u64), 0u32);
     }
 }

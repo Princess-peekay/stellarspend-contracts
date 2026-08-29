@@ -1,57 +1,215 @@
 #![no_std]
 
-use soroban_sdk::{contract, contracterror, contractimpl, Address, Env};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, panic_with_error, Address, Env};
 
-mod storage;
 #[cfg(test)]
 mod test;
-pub mod types;
-pub mod validation;
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
 
 /// Typed errors for the delegation contract.
 #[contracterror]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
 pub enum Error {
-    /// Contract has already been initialized.
-    AlreadyInitialized = 1,
-    /// Caller is not the administrator.
-    Unauthorized = 2,
-    /// Amount validation failed.
-    InvalidAmount = 3,
+    /// The address provided is invalid (e.g. self-delegation).
+    InvalidAddress = 1,
+    /// Amount is zero or negative.
+    InvalidAmount = 2,
+    /// Caller is not authorised to perform this operation.
+    Unauthorized = 3,
+    /// The requested amount would exceed the remaining allowance.
+    AmountTooLarge = 4,
+    // [SEC-DEL-01] Explicit overflow variant instead of silent i128::MAX clamp.
+    Overflow = 5,
 }
+
+// ---------------------------------------------------------------------------
+// Domain types
+// ---------------------------------------------------------------------------
+
+/// Persisted delegation record for an (owner, delegate) pair.
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct Delegation {
+    /// Maximum cumulative amount the delegate is allowed to spend.
+    pub limit: i128,
+    /// Cumulative amount already consumed by the delegate.
+    pub spent: i128,
+}
+
+/// Storage keys for the delegation contract.
+#[derive(Clone)]
+#[contracttype]
+pub enum DelegationDataKey {
+    /// Per-(owner, delegate) allowance record.
+    Allowance(Address, Address),
+}
+
+// ---------------------------------------------------------------------------
+// Contract
+// ---------------------------------------------------------------------------
 
 #[contract]
 /// Entry point for the delegation contract.
 pub struct Contract;
 
 #[contractimpl]
-impl Contract {
-    /// Initializes the contract with an administrator.
-    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
-        if storage::read_config(&env).is_some() {
-            return Err(Error::AlreadyInitialized);
+impl DelegationContract {
+    /// Authorises `delegate` to spend up to `limit` on behalf of `owner`.
+    ///
+    /// # Security
+    /// - [SEC-DEL-02] Self-delegation is explicitly blocked: an address granting
+    ///   itself a delegation would create a trivial privilege-escalation path.
+    /// - [SEC-DEL-03] `limit` must be strictly positive; zero or negative limits
+    ///   are rejected before any storage write occurs.
+    /// - Pre-existing delegations have their `limit` updated but `spent` is
+    ///   preserved, preventing a re-grant from resetting accumulated usage.
+    pub fn set_delegation(env: Env, owner: Address, delegate: Address, limit: i128) {
+        owner.require_auth();
+
+        // [SEC-DEL-02] Self-delegation guard.
+        if owner == delegate {
+            panic_with_error!(&env, Error::InvalidAddress);
         }
-        admin.require_auth();
-        storage::write_config(&env, &types::Config { admin, value: 0 });
-        Ok(())
+        // [SEC-DEL-03] Positive-limit guard.
+        if limit <= 0 {
+            panic_with_error!(&env, Error::InvalidAmount);
+        }
+
+        let key = DelegationDataKey::Allowance(owner.clone(), delegate.clone());
+        // Preserve spent so a limit reset cannot be abused to replay already-
+        // consumed allowance.
+        let mut delegation: Delegation = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Delegation { limit: 0, spent: 0 });
+
+        delegation.limit = limit;
+        env.storage().persistent().set(&key, &delegation);
+
+        env.events().publish(
+            (
+                soroban_sdk::symbol_short!("delegate"),
+                soroban_sdk::symbol_short!("set"),
+                owner.clone(),
+                delegate.clone(),
+            ),
+            limit,
+        );
     }
 
-    /// Updates the contract value after authenticating the administrator.
-    pub fn set_value(env: Env, admin: Address, value: i128) -> Result<(), Error> {
-        admin.require_auth();
-        if value < 0 {
+    /// Revokes all delegation rights from `delegate`.
+    ///
+    /// # Security
+    /// - [SEC-DEL-04] Removes the key entirely rather than zeroing fields so
+    ///   `consume_allowance` cannot race a zero-limit entry.
+    pub fn revoke_delegation(env: Env, owner: Address, delegate: Address) {
+        owner.require_auth();
+
+        let key = DelegationDataKey::Allowance(owner.clone(), delegate.clone());
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().remove(&key);
+
+            env.events().publish(
+                (
+                    soroban_sdk::symbol_short!("delegate"),
+                    soroban_sdk::symbol_short!("revoked"),
+                    owner.clone(),
+                    delegate.clone(),
+                ),
+                (),
+            );
+        }
+    }
+
+    /// Records that `delegate` has consumed `amount` of their allowance.
+    ///
+    /// # Security
+    /// - [SEC-DEL-05] `delegate.require_auth()` is the first operation so that
+    ///   unauthorized callers cannot probe delegation state.
+    /// - [SEC-DEL-01] `checked_add` replaces the previous `unwrap_or(i128::MAX)`
+    ///   clamp; an overflow now surfaces as a typed error rather than silently
+    ///   capping `new_spent` and potentially bypassing the limit comparison.
+    /// - Missing delegation entry returns `Unauthorized` (not `NotFound`) to
+    ///   avoid leaking information about whether a delegation exists.
+    pub fn consume_allowance(
+        env: Env,
+        owner: Address,
+        delegate: Address,
+        amount: i128,
+    ) -> Result<(), Error> {
+        // [SEC-DEL-05] Authenticate first — no state reads before this point.
+        delegate.require_auth();
+
+        if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
-        let current = storage::read_config(&env).ok_or(Error::Unauthorized)?;
-        if current.admin != admin {
-            return Err(Error::Unauthorized);
+
+        let key = DelegationDataKey::Allowance(owner.clone(), delegate.clone());
+
+        if let Some(mut delegation) = env.storage().persistent().get::<_, Delegation>(&key) {
+            // [SEC-DEL-01] Checked addition — surfaced as Overflow, not clamped.
+            let new_spent = delegation
+                .spent
+                .checked_add(amount)
+                .ok_or(Error::Overflow)?;
+
+            if new_spent > delegation.limit {
+                return Err(Error::AmountTooLarge);
+            }
+
+            delegation.spent = new_spent;
+            env.storage().persistent().set(&key, &delegation);
+
+            env.events().publish(
+                (
+                    soroban_sdk::symbol_short!("delegate"),
+                    soroban_sdk::symbol_short!("consumed"),
+                    owner.clone(),
+                    delegate.clone(),
+                ),
+                amount,
+            );
+
+            Ok(())
+        } else {
+            // [SEC-DEL-05] Return Unauthorized rather than a distinct "not found"
+            // error to avoid leaking delegation existence to unauthenticated callers.
+            Err(Error::Unauthorized)
         }
-        storage::write_config(&env, &types::Config { admin, value });
-        Ok(())
     }
 
-    /// Returns the current configured value.
-    pub fn get_value(env: Env) -> i128 {
-        storage::read_config(&env).map(|c| c.value).unwrap_or(0)
+    /// Returns the current delegation state, or `None` if no delegation exists.
+    pub fn get_delegation(env: Env, owner: Address, delegate: Address) -> Option<Delegation> {
+        let key = DelegationDataKey::Allowance(owner, delegate);
+        env.storage().persistent().get(&key)
+    }
+
+    /// Returns `true` when `delegate` has sufficient remaining allowance to cover
+    /// `amount` on behalf of `owner`, without mutating any state.
+    ///
+    /// This is the read-only entry point called cross-contract by `batch-rewards`
+    /// before distributing rewards, so it never requires auth itself.
+    ///
+    /// # Security
+    /// - Read-only: no storage writes occur.
+    /// - Returns `false` (not an error) when no delegation record exists, so
+    ///   callers can treat the result as a simple boolean gate.
+    pub fn check_allowance(env: Env, owner: Address, delegate: Address, amount: i128) -> bool {
+        if amount <= 0 {
+            return false;
+        }
+        let key = DelegationDataKey::Allowance(owner, delegate);
+        match env.storage().persistent().get::<_, Delegation>(&key) {
+            Some(d) => {
+                let remaining = d.limit.saturating_sub(d.spent);
+                remaining >= amount
+            }
+            None => false,
+        }
     }
 }
