@@ -1,96 +1,112 @@
-use soroban_sdk::{contracttype, Address, Env, String, Vec};
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Document {
-    pub id: u64,
-    pub owner: Address,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Chunk {
-    pub id: u64,
-    pub document_id: u64,
-    pub version: u32,
-    pub content: String,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum OwnershipError {
-    Unauthorized,
-    DocumentNotFound,
-}
-
-pub struct ChunkOwnershipManager;
-
-impl ChunkOwnershipManager {
-    /// Validates that the caller is either the document owner or an authorized administrator,
-    /// requiring cryptographic authorization from the caller.
-    pub fn verify_chunk_operation(
-        env: &Env,
-        caller: &Address,
-        document: &Document,
-        authorized_admins: &Vec<Address>,
-    ) -> Result<(), OwnershipError> {
-        // Enforce Soroban host authentication for the caller
-        caller.require_auth();
-
-        let is_owner = caller == &document.owner;
-        let is_admin = authorized_admins.contains(caller.clone());
-
-        if !is_owner && !is_admin {
-            return Err(OwnershipError::Unauthorized);
-        }
-
-        Ok(())
-    }
-}
+```rust
 use soroban_sdk::{contracttype, Address, Env, String};
 
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Chunk {
-    pub id: u64,
-    pub document_id: u64,
-    pub version: u32,
-    pub content: String,
-    pub is_active: bool,
-}
+use crate::document::DataKey as DocumentDataKey;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DeactivationError {
-    Unauthorized,
-    AlreadyDeactivated,
-    ChunkNotFound,
+pub struct DocumentChunk {
+    pub id: u32,
+    pub document_id: String,
+    pub commitment: String,
+    pub index: u32,
+    pub metadata: String,
 }
 
-pub struct ChunkLifecycleManager;
+#[derive(Clone)]
+#[contracttype]
+pub enum ChunkDataKey {
+    Chunk(String, u32),
+}
 
-impl ChunkLifecycleManager {
-    /// Deactivates a chunk if the caller is authorized (document owner or admin),
-    /// preserving historical provenance while blocking new retrieval inclusion.
-    pub fn deactivate_chunk(
+pub struct ChunkRegistrationManager;
+
+impl ChunkRegistrationManager {
+    /// Registers a document chunk using a commitment rather than storing
+    /// the full chunk content on-chain.
+    ///
+    /// Chunk IDs are scoped to their document, meaning the same chunk ID
+    /// may be used by different documents but cannot be registered twice
+    /// for the same document.
+    pub fn register_chunk(
         env: &Env,
-        caller: &Address,
-        document_owner: &Address,
-        chunk: &mut Chunk,
-    ) -> Result<(), DeactivationError> {
-        // Enforce Soroban host authorization for the caller
+        document_id: String,
+        chunk_id: u32,
+        index: u32,
+        commitment: String,
+        metadata: String,
+        caller: Address,
+    ) -> Result<(), &'static str> {
         caller.require_auth();
 
-        if caller != document_owner {
-            return Err(DeactivationError::Unauthorized);
+        // A chunk can only belong to an existing document.
+        let document = env
+            .storage()
+            .persistent()
+            .get(&DocumentDataKey::VersionedDoc(document_id.clone()))
+            .ok_or("DocumentNotFound")?;
+
+        // Only the document owner may register chunks for the document.
+        if document.owner != caller {
+            return Err(
+                "Unauthorized: only the document owner can register document chunks",
+            );
         }
 
-        if !chunk.is_active {
-            return Err(DeactivationError::AlreadyDeactivated);
+        // Do not allow chunks to be registered against a revoked document.
+        if document.revoked {
+            return Err(
+                "DocumentRevoked: cannot register chunks for a revoked document",
+            );
         }
 
-        // Soft-delete: toggle active state to false while maintaining historical data
-        chunk.is_active = false;
+        // A commitment is required because the actual chunk content is
+        // intentionally not stored on-chain.
+        if commitment.len() == 0 {
+            return Err("InvalidCommitment: chunk commitment cannot be empty");
+        }
+
+        let chunk_key = ChunkDataKey::Chunk(document_id.clone(), chunk_id);
+
+        // Chunk IDs are unique within a document.
+        if env.storage().persistent().has(&chunk_key) {
+            return Err("ChunkAlreadyExists");
+        }
+
+        let chunk = DocumentChunk {
+            id: chunk_id,
+            document_id,
+            commitment,
+            index,
+            metadata,
+        };
+
+        env.storage().persistent().set(&chunk_key, &chunk);
+
         Ok(())
     }
+
+    /// Retrieves a registered chunk by its document-scoped chunk ID.
+    pub fn get_chunk(
+        env: &Env,
+        document_id: String,
+        chunk_id: u32,
+    ) -> Result<DocumentChunk, &'static str> {
+        env.storage()
+            .persistent()
+            .get(&ChunkDataKey::Chunk(document_id, chunk_id))
+            .ok_or("ChunkNotFound")
+    }
+
+    /// Checks whether a chunk has already been registered for a document.
+    pub fn chunk_exists(
+        env: &Env,
+        document_id: String,
+        chunk_id: u32,
+    ) -> bool {
+        env.storage()
+            .persistent()
+            .has(&ChunkDataKey::Chunk(document_id, chunk_id))
+    }
 }
+```
