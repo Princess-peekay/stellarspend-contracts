@@ -7,6 +7,9 @@ use crate::access::{
     ResourceAccessLevel,
 };
 
+/// Default lifetime for retrieval requests, in seconds.
+pub const DEFAULT_RETRIEVAL_EXPIRATION_SECONDS: u64 = 3600;
+
 // -----------------------------------------------------------------------
 // Retrieval Request Types
 // -----------------------------------------------------------------------
@@ -37,12 +40,19 @@ pub struct RetrievalRequest {
     pub requester: Address,
     pub collection_id: String,
     /// Ledger timestamp at which the query was registered.
-    pub created_at: u64,
-    pub state: RetrievalRequestState,
+     pub created_at: u64,
+
+/// Ledger timestamp after which the request can no longer receive results.
+pub expires_at: u64,
+
+pub state: RetrievalRequestState,
 }
 
 /// Errors returned by the retrieval request module.
 #[contracterror]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+ #[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum RetrievalRequestError {
@@ -50,6 +60,8 @@ pub enum RetrievalRequestError {
     InvalidTransition = 2,
     Unauthorized = 3,
     CollectionAccessDenied = 4,
+    InvalidExpiration = 5,
+    RequestExpired = 6,
 }
 
 // -----------------------------------------------------------------------
