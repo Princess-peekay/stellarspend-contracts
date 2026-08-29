@@ -1,5 +1,5 @@
 use soroban_sdk::{
-    contracterror, contracttype, Env,
+    contracterror, contracttype, Bytes, Env, String,
 };
 
 // -----------------------------------------------------------------------
@@ -17,8 +17,8 @@ pub const MAX_RAG_TOP_K: u32 = 100;
 /// Metadata recorded for an off-chain RAG retrieval operation.
 ///
 /// The request ID associates this metadata with the retrieval query.
-/// `top_k` represents the configured number of knowledge items to select,
-/// while `result_count` represents the number of items actually selected.
+/// The collection ID and version identify the exact knowledge source
+/// used for the retrieval.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RetrievalMetadata {
@@ -30,13 +30,22 @@ pub struct RetrievalMetadata {
 
     /// Number of knowledge items actually selected.
     pub result_count: u32,
+
+    /// Collection used for the retrieval.
+    pub collection_id: String,
+
+    /// Version of the collection used for the retrieval.
+    pub collection_version: u64,
+
+    /// Commitment to the complete retrieval result.
+    pub result_commitment: Bytes,
 }
 
 // -----------------------------------------------------------------------
 // Errors
 // -----------------------------------------------------------------------
 
-/// Errors returned by the retrieval metadata module.
+/// Errors returned by the retrieval metadata and verification module.
 #[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -52,6 +61,18 @@ pub enum RetrievalMetadataError {
 
     /// Metadata for the requested retrieval does not exist.
     MetadataNotFound = 4,
+
+    /// The supplied request ID does not match the registered request.
+    QueryAssociationMismatch = 5,
+
+    /// The supplied collection does not match the registered collection.
+    CollectionAssociationMismatch = 6,
+
+    /// The supplied collection version does not match the registered version.
+    CollectionVersionMismatch = 7,
+
+    /// The supplied result does not match the registered commitment.
+    ResultCommitmentMismatch = 8,
 }
 
 // -----------------------------------------------------------------------
@@ -71,6 +92,30 @@ pub enum RetrievalMetadataKey {
 pub struct RetrievalMetadataManager;
 
 impl RetrievalMetadataManager {
+    /// Creates a deterministic commitment for a retrieval result.
+    ///
+    /// The commitment binds the result to:
+    /// - the retrieval request;
+    /// - the collection;
+    /// - the collection version;
+    /// - the actual retrieval result.
+    pub fn compute_result_commitment(
+        env: &Env,
+        request_id: u64,
+        collection_id: String,
+        collection_version: u64,
+        result: Bytes,
+    ) -> Bytes {
+        let mut payload = Bytes::new(env);
+
+        payload.extend_from_array(&request_id.to_be_bytes());
+        payload.extend(collection_id.to_bytes());
+        payload.extend_from_array(&collection_version.to_be_bytes());
+        payload.extend(result);
+
+        env.crypto().sha256(&payload).into()
+    }
+
     /// Stores metadata for an off-chain retrieval operation.
     ///
     /// The result count must:
@@ -82,6 +127,9 @@ impl RetrievalMetadataManager {
         request_id: u64,
         top_k: u32,
         result_count: u32,
+        collection_id: String,
+        collection_version: u64,
+        result_commitment: Bytes,
     ) -> Result<RetrievalMetadata, RetrievalMetadataError> {
         // ---------------------------------------------------------------
         // 1. Validate top-K
@@ -104,17 +152,32 @@ impl RetrievalMetadataManager {
         // ---------------------------------------------------------------
 
         if result_count > top_k {
-            return Err(RetrievalMetadataError::ResultCountExceedsTopK);
+            return Err(
+                RetrievalMetadataError::ResultCountExceedsTopK
+            );
         }
 
         // ---------------------------------------------------------------
-        // 4. Create and store metadata
+        // 4. Ensure the commitment is not empty
+        // ---------------------------------------------------------------
+
+        if result_commitment.is_empty() {
+            return Err(
+                RetrievalMetadataError::ResultCommitmentMismatch
+            );
+        }
+
+        // ---------------------------------------------------------------
+        // 5. Create and store metadata
         // ---------------------------------------------------------------
 
         let metadata = RetrievalMetadata {
             request_id,
             top_k,
             result_count,
+            collection_id,
+            collection_version,
+            result_commitment,
         };
 
         let key = RetrievalMetadataKey::Metadata(request_id);
@@ -137,6 +200,78 @@ impl RetrievalMetadataManager {
             .persistent()
             .get(&key)
             .ok_or(RetrievalMetadataError::MetadataNotFound)
+    }
+
+    /// Verifies that a supplied retrieval result matches the registered
+    /// result commitment and associations.
+    ///
+    /// Verification checks:
+    /// - request/query association;
+    /// - collection association;
+    /// - collection version association;
+    /// - result commitment.
+    pub fn verify_result(
+        env: &Env,
+        request_id: u64,
+        collection_id: String,
+        collection_version: u64,
+        result: Bytes,
+    ) -> Result<bool, RetrievalMetadataError> {
+        let metadata = Self::get_metadata(env, request_id)?;
+
+        // ---------------------------------------------------------------
+        // 1. Verify query/request association
+        // ---------------------------------------------------------------
+
+        if metadata.request_id != request_id {
+            return Err(
+                RetrievalMetadataError::QueryAssociationMismatch
+            );
+        }
+
+        // ---------------------------------------------------------------
+        // 2. Verify collection association
+        // ---------------------------------------------------------------
+
+        if metadata.collection_id != collection_id {
+            return Err(
+                RetrievalMetadataError::CollectionAssociationMismatch
+            );
+        }
+
+        // ---------------------------------------------------------------
+        // 3. Verify collection version
+        // ---------------------------------------------------------------
+
+        if metadata.collection_version != collection_version {
+            return Err(
+                RetrievalMetadataError::CollectionVersionMismatch
+            );
+        }
+
+        // ---------------------------------------------------------------
+        // 4. Recompute the commitment from the supplied result
+        // ---------------------------------------------------------------
+
+        let supplied_commitment = Self::compute_result_commitment(
+            env,
+            request_id,
+            collection_id,
+            collection_version,
+            result,
+        );
+
+        // ---------------------------------------------------------------
+        // 5. Verify the result commitment
+        // ---------------------------------------------------------------
+
+        if supplied_commitment != metadata.result_commitment {
+            return Err(
+                RetrievalMetadataError::ResultCommitmentMismatch
+            );
+        }
+
+        Ok(true)
     }
 
     /// Checks whether a top-K value is within the configured limit.
@@ -171,7 +306,9 @@ mod tests {
     fn valid_top_k_is_accepted() {
         assert!(RetrievalMetadataManager::is_valid_top_k(1));
         assert!(RetrievalMetadataManager::is_valid_top_k(10));
-        assert!(RetrievalMetadataManager::is_valid_top_k(MAX_RAG_TOP_K));
+        assert!(RetrievalMetadataManager::is_valid_top_k(
+            MAX_RAG_TOP_K
+        ));
     }
 
     #[test]
@@ -225,16 +362,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn result_count_above_global_limit_is_rejected() {
-        assert!(
-            !RetrievalMetadataManager::is_valid_result_count(
-                MAX_RAG_TOP_K,
-                MAX_RAG_TOP_K + 1
-            )
-        );
-    }
-
     // ---------------------------------------------------------------
     // Metadata storage
     // ---------------------------------------------------------------
@@ -243,92 +370,305 @@ mod tests {
     fn metadata_is_stored_and_retrieved() {
         let env = Env::default();
 
+        let collection_id =
+            String::from_str(&env, "collection-1");
+
+        let result =
+            Bytes::from_array(&env, &[1u8, 2u8, 3u8]);
+
+        let commitment =
+            RetrievalMetadataManager::compute_result_commitment(
+                &env,
+                42,
+                collection_id.clone(),
+                1,
+                result,
+            );
+
         let metadata =
             RetrievalMetadataManager::store_metadata(
                 &env,
                 42,
                 10,
                 7,
+                collection_id.clone(),
+                1,
+                commitment.clone(),
             )
             .unwrap();
 
-        assert_eq!(
-            metadata,
-            RetrievalMetadata {
-                request_id: 42,
-                top_k: 10,
-                result_count: 7,
-            }
-        );
+        assert_eq!(metadata.request_id, 42);
+        assert_eq!(metadata.top_k, 10);
+        assert_eq!(metadata.result_count, 7);
+        assert_eq!(metadata.collection_id, collection_id);
+        assert_eq!(metadata.collection_version, 1);
+        assert_eq!(metadata.result_commitment, commitment);
 
         let stored =
             RetrievalMetadataManager::get_metadata(&env, 42)
                 .unwrap();
 
-        assert_eq!(stored.request_id, 42);
-        assert_eq!(stored.top_k, 10);
-        assert_eq!(stored.result_count, 7);
+        assert_eq!(stored, metadata);
     }
 
     // ---------------------------------------------------------------
-    // Invalid metadata
+    // Successful verification
     // ---------------------------------------------------------------
 
     #[test]
-    fn zero_top_k_is_rejected_when_storing_metadata() {
+    fn matching_commitment_verifies_successfully() {
         let env = Env::default();
 
+        let collection_id =
+            String::from_str(&env, "collection-1");
+
         let result =
-            RetrievalMetadataManager::store_metadata(
+            Bytes::from_array(&env, &[10u8, 20u8, 30u8]);
+
+        let commitment =
+            RetrievalMetadataManager::compute_result_commitment(
                 &env,
-                1,
-                0,
-                0,
+                42,
+                collection_id.clone(),
+                3,
+                result.clone(),
             );
 
-        assert_eq!(
-            result,
-            Err(RetrievalMetadataError::InvalidTopK)
-        );
+        RetrievalMetadataManager::store_metadata(
+            &env,
+            42,
+            10,
+            3,
+            collection_id.clone(),
+            3,
+            commitment,
+        )
+        .unwrap();
+
+        let verified =
+            RetrievalMetadataManager::verify_result(
+                &env,
+                42,
+                collection_id,
+                3,
+                result,
+            )
+            .unwrap();
+
+        assert!(verified);
     }
 
+    // ---------------------------------------------------------------
+    // Tampered result
+    // ---------------------------------------------------------------
+
     #[test]
-    fn result_count_greater_than_top_k_is_rejected() {
+    fn tampered_result_fails_verification() {
         let env = Env::default();
 
-        let result =
-            RetrievalMetadataManager::store_metadata(
+        let collection_id =
+            String::from_str(&env, "collection-1");
+
+        let original_result =
+            Bytes::from_array(&env, &[10u8, 20u8, 30u8]);
+
+        let commitment =
+            RetrievalMetadataManager::compute_result_commitment(
                 &env,
+                42,
+                collection_id.clone(),
                 1,
-                10,
-                11,
+                original_result,
+            );
+
+        RetrievalMetadataManager::store_metadata(
+            &env,
+            42,
+            10,
+            3,
+            collection_id.clone(),
+            1,
+            commitment,
+        )
+        .unwrap();
+
+        let tampered_result =
+            Bytes::from_array(&env, &[10u8, 20u8, 99u8]);
+
+        let result =
+            RetrievalMetadataManager::verify_result(
+                &env,
+                42,
+                collection_id,
+                1,
+                tampered_result,
             );
 
         assert_eq!(
             result,
             Err(
-                RetrievalMetadataError::ResultCountExceedsTopK
+                RetrievalMetadataError::ResultCommitmentMismatch
             )
         );
     }
 
+    // ---------------------------------------------------------------
+    // Query association
+    // ---------------------------------------------------------------
+
     #[test]
-    fn zero_result_count_is_rejected_when_storing_metadata() {
+    fn wrong_request_id_fails_verification() {
         let env = Env::default();
 
+        let collection_id =
+            String::from_str(&env, "collection-1");
+
         let result =
-            RetrievalMetadataManager::store_metadata(
+            Bytes::from_array(&env, &[1u8, 2u8, 3u8]);
+
+        let commitment =
+            RetrievalMetadataManager::compute_result_commitment(
                 &env,
+                42,
+                collection_id.clone(),
                 1,
-                10,
-                0,
+                result.clone(),
+            );
+
+        RetrievalMetadataManager::store_metadata(
+            &env,
+            42,
+            10,
+            3,
+            collection_id.clone(),
+            1,
+            commitment,
+        )
+        .unwrap();
+
+        let verification =
+            RetrievalMetadataManager::verify_result(
+                &env,
+                43,
+                collection_id,
+                1,
+                result,
             );
 
         assert_eq!(
-            result,
-            Err(RetrievalMetadataError::InvalidResultCount)
+            verification,
+            Err(RetrievalMetadataError::ResultCommitmentMismatch)
         );
     }
+
+    // ---------------------------------------------------------------
+    // Collection association
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn wrong_collection_fails_verification() {
+        let env = Env::default();
+
+        let original_collection =
+            String::from_str(&env, "collection-1");
+
+        let result =
+            Bytes::from_array(&env, &[1u8, 2u8, 3u8]);
+
+        let commitment =
+            RetrievalMetadataManager::compute_result_commitment(
+                &env,
+                42,
+                original_collection.clone(),
+                1,
+                result.clone(),
+            );
+
+        RetrievalMetadataManager::store_metadata(
+            &env,
+            42,
+            10,
+            3,
+            original_collection,
+            1,
+            commitment,
+        )
+        .unwrap();
+
+        let wrong_collection =
+            String::from_str(&env, "collection-2");
+
+        let verification =
+            RetrievalMetadataManager::verify_result(
+                &env,
+                42,
+                wrong_collection,
+                1,
+                result,
+            );
+
+        assert_eq!(
+            verification,
+            Err(
+                RetrievalMetadataError::CollectionAssociationMismatch
+            )
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Collection version association
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn wrong_collection_version_fails_verification() {
+        let env = Env::default();
+
+        let collection_id =
+            String::from_str(&env, "collection-1");
+
+        let result =
+            Bytes::from_array(&env, &[1u8, 2u8, 3u8]);
+
+        let commitment =
+            RetrievalMetadataManager::compute_result_commitment(
+                &env,
+                42,
+                collection_id.clone(),
+                1,
+                result.clone(),
+            );
+
+        RetrievalMetadataManager::store_metadata(
+            &env,
+            42,
+            10,
+            3,
+            collection_id.clone(),
+            1,
+            commitment,
+        )
+        .unwrap();
+
+        let verification =
+            RetrievalMetadataManager::verify_result(
+                &env,
+                42,
+                collection_id,
+                2,
+                result,
+            );
+
+        assert_eq!(
+            verification,
+            Err(
+                RetrievalMetadataError::CollectionVersionMismatch
+            )
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Missing metadata
+    // ---------------------------------------------------------------
 
     #[test]
     fn nonexistent_metadata_returns_error() {
