@@ -1,6 +1,6 @@
 use soroban_sdk::contracttype;
 
-/// Stored configuration for this StellarSpend contract.
+/// Stores the administrator and current value for the budget allocation contract.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
 pub struct Config {
