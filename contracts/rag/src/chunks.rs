@@ -3,14 +3,52 @@ use soroban_sdk::{contracttype, Address, Env, String};
 
 use crate::document::DataKey as DocumentDataKey;
 
+/// Maximum length of chunk metadata fields.
+///
+/// These limits prevent arbitrarily large metadata from being persisted
+/// alongside a chunk.
+pub const MAX_PAGE_REFERENCE_LENGTH: u32 = 64;
+pub const MAX_SECTION_LENGTH: u32 = 256;
+pub const MAX_HEADING_LENGTH: u32 = 256;
+pub const MAX_SOURCE_REFERENCE_LENGTH: u32 = 512;
+pub const MAX_SIZE_COMMITMENT_LENGTH: u32 = 256;
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChunkMetadata {
+    /// Source document page containing this chunk.
+    pub page: Option<String>,
+
+    /// Section containing this chunk.
+    pub section: Option<String>,
+
+    /// Heading associated with this chunk.
+    pub heading: Option<String>,
+
+    /// Position of the chunk within the document.
+    pub chunk_index: u32,
+
+    /// Optional commitment to the token/size information for the chunk.
+    pub size_commitment: Option<String>,
+
+    /// Reference to the original source location.
+    pub source_reference: Option<String>,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DocumentChunk {
+    /// Unique identifier scoped to the parent document.
     pub id: u32,
+
+    /// ID of the document containing this chunk.
     pub document_id: String,
+
+    /// Commitment to the actual chunk content.
     pub commitment: String,
-    pub index: u32,
-    pub metadata: String,
+
+    /// Chunk metadata.
+    pub metadata: ChunkMetadata,
 }
 
 #[derive(Clone)]
@@ -24,51 +62,42 @@ pub struct ChunkRegistrationManager;
 impl ChunkRegistrationManager {
     /// Registers a document chunk using a commitment rather than storing
     /// the full chunk content on-chain.
-    ///
-    /// Chunk IDs are scoped to their document, meaning the same chunk ID
-    /// may be used by different documents but cannot be registered twice
-    /// for the same document.
     pub fn register_chunk(
         env: &Env,
         document_id: String,
         chunk_id: u32,
-        index: u32,
+        metadata: ChunkMetadata,
         commitment: String,
-        metadata: String,
         caller: Address,
     ) -> Result<(), &'static str> {
         caller.require_auth();
 
-        // A chunk can only belong to an existing document.
         let document = env
             .storage()
             .persistent()
             .get(&DocumentDataKey::VersionedDoc(document_id.clone()))
             .ok_or("DocumentNotFound")?;
 
-        // Only the document owner may register chunks for the document.
         if document.owner != caller {
             return Err(
                 "Unauthorized: only the document owner can register document chunks",
             );
         }
 
-        // Do not allow chunks to be registered against a revoked document.
         if document.revoked {
             return Err(
                 "DocumentRevoked: cannot register chunks for a revoked document",
             );
         }
 
-        // A commitment is required because the actual chunk content is
-        // intentionally not stored on-chain.
         if commitment.len() == 0 {
             return Err("InvalidCommitment: chunk commitment cannot be empty");
         }
 
+        Self::validate_metadata(&metadata)?;
+
         let chunk_key = ChunkDataKey::Chunk(document_id.clone(), chunk_id);
 
-        // Chunk IDs are unique within a document.
         if env.storage().persistent().has(&chunk_key) {
             return Err("ChunkAlreadyExists");
         }
@@ -77,7 +106,6 @@ impl ChunkRegistrationManager {
             id: chunk_id,
             document_id,
             commitment,
-            index,
             metadata,
         };
 
@@ -86,7 +114,65 @@ impl ChunkRegistrationManager {
         Ok(())
     }
 
-    /// Retrieves a registered chunk by its document-scoped chunk ID.
+    /// Updates metadata for an existing chunk.
+    ///
+    /// Only the owner of the parent document may update chunk metadata.
+    pub fn update_chunk_metadata(
+        env: &Env,
+        document_id: String,
+        chunk_id: u32,
+        metadata: ChunkMetadata,
+        caller: Address,
+    ) -> Result<(), &'static str> {
+        caller.require_auth();
+
+        let document = env
+            .storage()
+            .persistent()
+            .get(&DocumentDataKey::VersionedDoc(document_id.clone()))
+            .ok_or("DocumentNotFound")?;
+
+        if document.owner != caller {
+            return Err(
+                "Unauthorized: only the document owner can update chunk metadata",
+            );
+        }
+
+        let chunk_key = ChunkDataKey::Chunk(document_id.clone(), chunk_id);
+
+        let mut chunk: DocumentChunk = env
+            .storage()
+            .persistent()
+            .get(&chunk_key)
+            .ok_or("ChunkNotFound")?;
+
+        Self::validate_metadata(&metadata)?;
+
+        chunk.metadata = metadata;
+
+        env.storage()
+            .persistent()
+            .set(&chunk_key, &chunk);
+
+        Ok(())
+    }
+
+    /// Retrieves the metadata associated with a chunk.
+    pub fn get_chunk_metadata(
+        env: &Env,
+        document_id: String,
+        chunk_id: u32,
+    ) -> Result<ChunkMetadata, &'static str> {
+        let chunk: DocumentChunk = env
+            .storage()
+            .persistent()
+            .get(&ChunkDataKey::Chunk(document_id, chunk_id))
+            .ok_or("ChunkNotFound")?;
+
+        Ok(chunk.metadata)
+    }
+
+    /// Retrieves a complete registered chunk.
     pub fn get_chunk(
         env: &Env,
         document_id: String,
@@ -98,7 +184,7 @@ impl ChunkRegistrationManager {
             .ok_or("ChunkNotFound")
     }
 
-    /// Checks whether a chunk has already been registered for a document.
+    /// Checks whether a chunk exists for a document.
     pub fn chunk_exists(
         env: &Env,
         document_id: String,
@@ -108,5 +194,43 @@ impl ChunkRegistrationManager {
             .persistent()
             .has(&ChunkDataKey::Chunk(document_id, chunk_id))
     }
+
+    /// Validates all bounded metadata fields before persistence.
+    fn validate_metadata(metadata: &ChunkMetadata) -> Result<(), &'static str> {
+        if let Some(page) = &metadata.page {
+            if page.len() > MAX_PAGE_REFERENCE_LENGTH {
+                return Err("MetadataTooLong: page reference exceeds maximum length");
+            }
+        }
+
+        if let Some(section) = &metadata.section {
+            if section.len() > MAX_SECTION_LENGTH {
+                return Err("MetadataTooLong: section exceeds maximum length");
+            }
+        }
+
+        if let Some(heading) = &metadata.heading {
+            if heading.len() > MAX_HEADING_LENGTH {
+                return Err("MetadataTooLong: heading exceeds maximum length");
+            }
+        }
+
+        if let Some(size_commitment) = &metadata.size_commitment {
+            if size_commitment.len() > MAX_SIZE_COMMITMENT_LENGTH {
+                return Err(
+                    "MetadataTooLong: size commitment exceeds maximum length",
+                );
+            }
+        }
+
+        if let Some(source_reference) = &metadata.source_reference {
+            if source_reference.len() > MAX_SOURCE_REFERENCE_LENGTH {
+                return Err(
+                    "MetadataTooLong: source reference exceeds maximum length",
+                );
+            }
+        }
+
+        Ok(())
+    }
 }
-```
