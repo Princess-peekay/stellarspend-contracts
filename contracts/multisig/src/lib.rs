@@ -191,11 +191,7 @@ impl Contract {
     }
 
     /// Updates the high-value transaction threshold. Caller must be the admin.
-    pub fn set_high_value_threshold(
-        env: Env,
-        caller: Address,
-        amount: i128,
-    ) -> Result<(), Error> {
+    pub fn set_high_value_threshold(env: Env, caller: Address, amount: i128) -> Result<(), Error> {
         set_high_value_threshold(&env, caller, amount);
         Ok(())
     }

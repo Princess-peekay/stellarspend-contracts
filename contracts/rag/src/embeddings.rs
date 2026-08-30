@@ -97,10 +97,7 @@ pub enum EmbeddingKey {
     ModelCount,
 
     // Embedding commitments
-    Commitment {
-        chunk_id: u64,
-        version: u64,
-    },
+    Commitment { chunk_id: u64, version: u64 },
 }
 
 // -----------------------------------------------------------------------------
@@ -129,8 +126,7 @@ pub fn register_model(
         return Err(EmbeddingError::MetadataTooLong);
     }
 
-    let identifier_key =
-        EmbeddingKey::ModelIdentifier(identifier.clone());
+    let identifier_key = EmbeddingKey::ModelIdentifier(identifier.clone());
 
     if env.storage().persistent().has(&identifier_key) {
         return Err(EmbeddingError::DuplicateModel);
@@ -149,45 +145,31 @@ pub fn register_model(
         .persistent()
         .set(&EmbeddingKey::Model(model_id), &model);
 
-    env.storage()
-        .persistent()
-        .set(&identifier_key, &model_id);
+    env.storage().persistent().set(&identifier_key, &model_id);
 
     env.storage()
         .persistent()
-        .set(
-            &EmbeddingKey::ModelCount,
-            &(model_id + 1),
-        );
+        .set(&EmbeddingKey::ModelCount, &(model_id + 1));
 
     Ok(model_id)
 }
 
 /// Retrieves a registered model by ID.
-pub fn get_model(
-    env: &Env,
-    model_id: u64,
-) -> Option<EmbeddingModel> {
+pub fn get_model(env: &Env, model_id: u64) -> Option<EmbeddingModel> {
     env.storage()
         .persistent()
         .get(&EmbeddingKey::Model(model_id))
 }
 
 /// Retrieves a model ID by its unique identifier.
-pub fn get_model_id(
-    env: &Env,
-    identifier: String,
-) -> Option<u64> {
+pub fn get_model_id(env: &Env, identifier: String) -> Option<u64> {
     env.storage()
         .persistent()
         .get(&EmbeddingKey::ModelIdentifier(identifier))
 }
 
 /// Returns whether a registered model is active.
-pub fn get_model_status(
-    env: &Env,
-    model_id: u64,
-) -> Result<bool, EmbeddingError> {
+pub fn get_model_status(env: &Env, model_id: u64) -> Result<bool, EmbeddingError> {
     match get_model(env, model_id) {
         Some(model) => Ok(model.active),
         None => Err(EmbeddingError::ModelNotFound),
@@ -241,26 +223,18 @@ pub fn register_commitment(
     }
 
     if dimension_commitment.is_empty() {
-        return Err(
-            EmbeddingError::EmptyDimensionCommitment
-        );
+        return Err(EmbeddingError::EmptyDimensionCommitment);
     }
 
-    if dimension_commitment.len()
-        > MAX_DIMENSION_COMMITMENT_LENGTH
-    {
-        return Err(
-            EmbeddingError::DimensionCommitmentTooLong
-        );
+    if dimension_commitment.len() > MAX_DIMENSION_COMMITMENT_LENGTH {
+        return Err(EmbeddingError::DimensionCommitmentTooLong);
     }
 
     // -------------------------------------------------------------------------
     // Dimension validation
     // -------------------------------------------------------------------------
 
-    if dimension < MIN_EMBEDDING_DIMENSION
-        || dimension > MAX_EMBEDDING_DIMENSION
-    {
+    if dimension < MIN_EMBEDDING_DIMENSION || dimension > MAX_EMBEDDING_DIMENSION {
         return Err(EmbeddingError::InvalidDimension);
     }
 
@@ -281,16 +255,11 @@ pub fn register_commitment(
     // Chunk + version binding
     // -------------------------------------------------------------------------
 
-    let key = EmbeddingKey::Commitment {
-        chunk_id,
-        version,
-    };
+    let key = EmbeddingKey::Commitment { chunk_id, version };
 
     // Never overwrite a historical commitment.
     if env.storage().persistent().has(&key) {
-        return Err(
-            EmbeddingError::CommitmentAlreadyExists
-        );
+        return Err(EmbeddingError::CommitmentAlreadyExists);
     }
 
     // -------------------------------------------------------------------------
@@ -306,9 +275,7 @@ pub fn register_commitment(
         dimension_commitment,
     };
 
-    env.storage()
-        .persistent()
-        .set(&key, &embedding);
+    env.storage().persistent().set(&key, &embedding);
 
     Ok(())
 }
@@ -317,15 +284,8 @@ pub fn register_commitment(
 ///
 /// Historical records remain available indefinitely unless explicitly
 /// removed by a future storage policy.
-pub fn get_commitment(
-    env: &Env,
-    chunk_id: u64,
-    version: u64,
-) -> Option<EmbeddingCommitment> {
-    let key = EmbeddingKey::Commitment {
-        chunk_id,
-        version,
-    };
+pub fn get_commitment(env: &Env, chunk_id: u64, version: u64) -> Option<EmbeddingCommitment> {
+    let key = EmbeddingKey::Commitment { chunk_id, version };
 
     env.storage().persistent().get(&key)
 }
@@ -346,8 +306,8 @@ pub fn verify_commitment(
         return Err(EmbeddingError::CommitmentTooLong);
     }
 
-    let stored = get_commitment(env, chunk_id, version)
-        .ok_or(EmbeddingError::CommitmentNotFound)?;
+    let stored =
+        get_commitment(env, chunk_id, version).ok_or(EmbeddingError::CommitmentNotFound)?;
 
     Ok(stored.commitment == commitment)
 }
@@ -363,14 +323,12 @@ pub fn verify_dimension(
     version: u64,
     dimension: u32,
 ) -> Result<bool, EmbeddingError> {
-    if dimension < MIN_EMBEDDING_DIMENSION
-        || dimension > MAX_EMBEDDING_DIMENSION
-    {
+    if dimension < MIN_EMBEDDING_DIMENSION || dimension > MAX_EMBEDDING_DIMENSION {
         return Err(EmbeddingError::InvalidDimension);
     }
 
-    let stored = get_commitment(env, chunk_id, version)
-        .ok_or(EmbeddingError::CommitmentNotFound)?;
+    let stored =
+        get_commitment(env, chunk_id, version).ok_or(EmbeddingError::CommitmentNotFound)?;
 
     Ok(stored.dimension == dimension)
 }
@@ -384,9 +342,9 @@ pub fn verify_chunk_binding(
     chunk_id: u64,
     version: u64,
 ) -> Result<bool, EmbeddingError> {
-    let stored = get_commitment(env, chunk_id, version)
-        .ok_or(EmbeddingError::CommitmentNotFound)?;
-        //Addition may come
+    let stored =
+        get_commitment(env, chunk_id, version).ok_or(EmbeddingError::CommitmentNotFound)?;
+    //Addition may come
 
     Ok(stored.chunk_id == chunk_id)
 }

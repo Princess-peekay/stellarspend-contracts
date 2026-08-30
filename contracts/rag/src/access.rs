@@ -127,10 +127,7 @@ impl AccessControlManager {
     }
 
     /// Gets the access level for a resource, defaulting to `OwnerOnly`.
-    pub fn get_resource_access_level(
-        env: &Env,
-        resource_id: String,
-    ) -> ResourceAccessLevel {
+    pub fn get_resource_access_level(env: &Env, resource_id: String) -> ResourceAccessLevel {
         env.storage()
             .persistent()
             .get(&AccessDataKey::Level(resource_id))
@@ -157,17 +154,13 @@ impl AccessControlManager {
 
         administrator.require_auth();
 
-        env.storage()
-            .instance()
-            .set(&key, &administrator);
+        env.storage().instance().set(&key, &administrator);
 
         Ok(())
     }
 
     /// Returns the administrator responsible for provider authorization.
-    pub fn get_provider_admin(
-        env: &Env,
-    ) -> Result<Address, ProviderAccessError> {
+    pub fn get_provider_admin(env: &Env) -> Result<Address, ProviderAccessError> {
         env.storage()
             .instance()
             .get(&AccessDataKey::Administrator)
@@ -192,10 +185,8 @@ impl AccessControlManager {
 
         env.storage().persistent().set(&key, &true);
 
-        env.events().publish(
-            (soroban_sdk::symbol_short!("provider"), provider),
-            true,
-        );
+        env.events()
+            .publish((soroban_sdk::symbol_short!("provider"), provider), true);
 
         Ok(())
     }
@@ -218,24 +209,17 @@ impl AccessControlManager {
 
         env.storage().persistent().remove(&key);
 
-        env.events().publish(
-            (soroban_sdk::symbol_short!("provider"), provider),
-            false,
-        );
+        env.events()
+            .publish((soroban_sdk::symbol_short!("provider"), provider), false);
 
         Ok(())
     }
 
     /// Returns true when the provider is currently authorized.
-    pub fn is_authorized_embedding_provider(
-        env: &Env,
-        provider: Address,
-    ) -> bool {
+    pub fn is_authorized_embedding_provider(env: &Env, provider: Address) -> bool {
         env.storage()
             .persistent()
-            .get::<_, bool>(
-                &AccessDataKey::EmbeddingProvider(provider),
-            )
+            .get::<_, bool>(&AccessDataKey::EmbeddingProvider(provider))
             .unwrap_or(false)
     }
 
@@ -247,10 +231,7 @@ impl AccessControlManager {
         env: &Env,
         provider: &Address,
     ) -> Result<(), ProviderAccessError> {
-        if !Self::is_authorized_embedding_provider(
-            env,
-            provider.clone(),
-        ) {
+        if !Self::is_authorized_embedding_provider(env, provider.clone()) {
             return Err(ProviderAccessError::Unauthorized);
         }
 
@@ -260,10 +241,7 @@ impl AccessControlManager {
     }
 
     /// Ensures the caller is the configured provider administrator.
-    fn require_provider_admin(
-        env: &Env,
-        caller: &Address,
-    ) -> Result<(), ProviderAccessError> {
+    fn require_provider_admin(env: &Env, caller: &Address) -> Result<(), ProviderAccessError> {
         let administrator = Self::get_provider_admin(env)?;
 
         if &administrator != caller {
@@ -292,25 +270,14 @@ mod tests {
         let administrator = Address::generate(&env);
         let provider = Address::generate(&env);
 
-        AccessControlManager::initialize_provider_admin(
-            &env,
-            administrator.clone(),
-        )
-        .unwrap();
+        AccessControlManager::initialize_provider_admin(&env, administrator.clone()).unwrap();
 
-        AccessControlManager::authorize_embedding_provider(
-            &env,
-            administrator,
-            provider.clone(),
-        )
-        .unwrap();
+        AccessControlManager::authorize_embedding_provider(&env, administrator, provider.clone())
+            .unwrap();
 
-        assert!(
-            AccessControlManager::is_authorized_embedding_provider(
-                &env,
-                provider
-            )
-        );
+        assert!(AccessControlManager::is_authorized_embedding_provider(
+            &env, provider
+        ));
     }
 
     #[test]
@@ -320,11 +287,7 @@ mod tests {
         let administrator = Address::generate(&env);
         let provider = Address::generate(&env);
 
-        AccessControlManager::initialize_provider_admin(
-            &env,
-            administrator.clone(),
-        )
-        .unwrap();
+        AccessControlManager::initialize_provider_admin(&env, administrator.clone()).unwrap();
 
         AccessControlManager::authorize_embedding_provider(
             &env,
@@ -333,26 +296,17 @@ mod tests {
         )
         .unwrap();
 
-        assert!(
-            AccessControlManager::is_authorized_embedding_provider(
-                &env,
-                provider.clone()
-            )
-        );
-
-        AccessControlManager::revoke_embedding_provider(
+        assert!(AccessControlManager::is_authorized_embedding_provider(
             &env,
-            administrator,
-            provider.clone(),
-        )
-        .unwrap();
+            provider.clone()
+        ));
 
-        assert!(
-            !AccessControlManager::is_authorized_embedding_provider(
-                &env,
-                provider
-            )
-        );
+        AccessControlManager::revoke_embedding_provider(&env, administrator, provider.clone())
+            .unwrap();
+
+        assert!(!AccessControlManager::is_authorized_embedding_provider(
+            &env, provider
+        ));
     }
 
     #[test]
@@ -361,16 +315,9 @@ mod tests {
 
         let provider = Address::generate(&env);
 
-        let result =
-            AccessControlManager::require_authorized_embedding_provider(
-                &env,
-                &provider,
-            );
+        let result = AccessControlManager::require_authorized_embedding_provider(&env, &provider);
 
-        assert_eq!(
-            result,
-            Err(ProviderAccessError::Unauthorized)
-        );
+        assert_eq!(result, Err(ProviderAccessError::Unauthorized));
     }
 
     #[test]
@@ -380,24 +327,12 @@ mod tests {
         let administrator = Address::generate(&env);
         let provider = Address::generate(&env);
 
-        AccessControlManager::initialize_provider_admin(
-            &env,
-            administrator.clone(),
-        )
-        .unwrap();
+        AccessControlManager::initialize_provider_admin(&env, administrator.clone()).unwrap();
 
-        AccessControlManager::authorize_embedding_provider(
-            &env,
-            administrator,
-            provider.clone(),
-        )
-        .unwrap();
+        AccessControlManager::authorize_embedding_provider(&env, administrator, provider.clone())
+            .unwrap();
 
-        let result =
-            AccessControlManager::require_authorized_embedding_provider(
-                &env,
-                &provider,
-            );
+        let result = AccessControlManager::require_authorized_embedding_provider(&env, &provider);
 
         assert!(result.is_ok());
     }
@@ -409,11 +344,7 @@ mod tests {
         let administrator = Address::generate(&env);
         let provider = Address::generate(&env);
 
-        AccessControlManager::initialize_provider_admin(
-            &env,
-            administrator.clone(),
-        )
-        .unwrap();
+        AccessControlManager::initialize_provider_admin(&env, administrator.clone()).unwrap();
 
         AccessControlManager::authorize_embedding_provider(
             &env,
@@ -422,23 +353,12 @@ mod tests {
         )
         .unwrap();
 
-        AccessControlManager::revoke_embedding_provider(
-            &env,
-            administrator,
-            provider.clone(),
-        )
-        .unwrap();
+        AccessControlManager::revoke_embedding_provider(&env, administrator, provider.clone())
+            .unwrap();
 
-        let result =
-            AccessControlManager::require_authorized_embedding_provider(
-                &env,
-                &provider,
-            );
+        let result = AccessControlManager::require_authorized_embedding_provider(&env, &provider);
 
-        assert_eq!(
-            result,
-            Err(ProviderAccessError::Unauthorized)
-        );
+        assert_eq!(result, Err(ProviderAccessError::Unauthorized));
     }
 
     #[test]
@@ -449,30 +369,16 @@ mod tests {
         let attacker = Address::generate(&env);
         let provider = Address::generate(&env);
 
-        AccessControlManager::initialize_provider_admin(
-            &env,
-            administrator,
-        )
-        .unwrap();
+        AccessControlManager::initialize_provider_admin(&env, administrator).unwrap();
 
         let result =
-            AccessControlManager::authorize_embedding_provider(
-                &env,
-                attacker,
-                provider.clone(),
-            );
+            AccessControlManager::authorize_embedding_provider(&env, attacker, provider.clone());
 
-        assert_eq!(
-            result,
-            Err(ProviderAccessError::Unauthorized)
-        );
+        assert_eq!(result, Err(ProviderAccessError::Unauthorized));
 
-        assert!(
-            !AccessControlManager::is_authorized_embedding_provider(
-                &env,
-                provider
-            )
-        );
+        assert!(!AccessControlManager::is_authorized_embedding_provider(
+            &env, provider
+        ));
     }
 
     #[test]
@@ -483,37 +389,19 @@ mod tests {
         let attacker = Address::generate(&env);
         let provider = Address::generate(&env);
 
-        AccessControlManager::initialize_provider_admin(
-            &env,
-            administrator.clone(),
-        )
-        .unwrap();
+        AccessControlManager::initialize_provider_admin(&env, administrator.clone()).unwrap();
 
-        AccessControlManager::authorize_embedding_provider(
-            &env,
-            administrator,
-            provider.clone(),
-        )
-        .unwrap();
+        AccessControlManager::authorize_embedding_provider(&env, administrator, provider.clone())
+            .unwrap();
 
         let result =
-            AccessControlManager::revoke_embedding_provider(
-                &env,
-                attacker,
-                provider.clone(),
-            );
+            AccessControlManager::revoke_embedding_provider(&env, attacker, provider.clone());
 
-        assert_eq!(
-            result,
-            Err(ProviderAccessError::Unauthorized)
-        );
+        assert_eq!(result, Err(ProviderAccessError::Unauthorized));
 
-        assert!(
-            AccessControlManager::is_authorized_embedding_provider(
-                &env,
-                provider
-            )
-        );
+        assert!(AccessControlManager::is_authorized_embedding_provider(
+            &env, provider
+        ));
     }
 
     #[test]
@@ -523,11 +411,7 @@ mod tests {
         let administrator = Address::generate(&env);
         let provider = Address::generate(&env);
 
-        AccessControlManager::initialize_provider_admin(
-            &env,
-            administrator.clone(),
-        )
-        .unwrap();
+        AccessControlManager::initialize_provider_admin(&env, administrator.clone()).unwrap();
 
         AccessControlManager::authorize_embedding_provider(
             &env,
@@ -537,16 +421,9 @@ mod tests {
         .unwrap();
 
         let result =
-            AccessControlManager::authorize_embedding_provider(
-                &env,
-                administrator,
-                provider,
-            );
+            AccessControlManager::authorize_embedding_provider(&env, administrator, provider);
 
-        assert_eq!(
-            result,
-            Err(ProviderAccessError::ProviderAlreadyAuthorized)
-        );
+        assert_eq!(result, Err(ProviderAccessError::ProviderAlreadyAuthorized));
     }
 
     #[test]
@@ -556,23 +433,11 @@ mod tests {
         let administrator = Address::generate(&env);
         let provider = Address::generate(&env);
 
-        AccessControlManager::initialize_provider_admin(
-            &env,
-            administrator.clone(),
-        )
-        .unwrap();
+        AccessControlManager::initialize_provider_admin(&env, administrator.clone()).unwrap();
 
-        let result =
-            AccessControlManager::revoke_embedding_provider(
-                &env,
-                administrator,
-                provider,
-            );
+        let result = AccessControlManager::revoke_embedding_provider(&env, administrator, provider);
 
-        assert_eq!(
-            result,
-            Err(ProviderAccessError::ProviderNotAuthorized)
-        );
+        assert_eq!(result, Err(ProviderAccessError::ProviderNotAuthorized));
     }
 
     #[test]
@@ -582,22 +447,11 @@ mod tests {
         let administrator = Address::generate(&env);
         let second_administrator = Address::generate(&env);
 
-        AccessControlManager::initialize_provider_admin(
-            &env,
-            administrator,
-        )
-        .unwrap();
+        AccessControlManager::initialize_provider_admin(&env, administrator).unwrap();
 
-        let result =
-            AccessControlManager::initialize_provider_admin(
-                &env,
-                second_administrator,
-            );
+        let result = AccessControlManager::initialize_provider_admin(&env, second_administrator);
 
-        assert_eq!(
-            result,
-            Err(ProviderAccessError::Unauthorized)
-        );
+        assert_eq!(result, Err(ProviderAccessError::Unauthorized));
     }
 }
 use soroban_sdk::{contracttype, Address, Env, Vec};
