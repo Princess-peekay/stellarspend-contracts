@@ -26,7 +26,9 @@ mod tests {
 
         client.set_delegation(&owner, &delegate, &500_i128);
 
-        let d = client.get_delegation(&owner, &delegate).expect("delegation must exist");
+        let d = client
+            .get_delegation(&owner, &delegate)
+            .expect("delegation must exist");
         assert_eq!(d.limit, 500);
         assert_eq!(d.spent, 0);
     }
@@ -84,7 +86,9 @@ mod tests {
         // Re-granting a higher limit must not reset spent.
         client.set_delegation(&owner, &delegate, &500_i128);
 
-        let d = client.get_delegation(&owner, &delegate).expect("must exist");
+        let d = client
+            .get_delegation(&owner, &delegate)
+            .expect("must exist");
         assert_eq!(d.limit, 500);
         assert_eq!(d.spent, 50, "spent must be preserved after limit update");
     }

@@ -20,4 +20,3 @@ pub struct Config {
     /// logic is implemented).
     pub value: i128,
 }
-

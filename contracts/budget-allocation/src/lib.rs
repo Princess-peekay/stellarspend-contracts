@@ -27,6 +27,13 @@ pub struct Contract;
 #[contractimpl]
 impl Contract {
     /// Initializes the contract with an administrator.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban execution environment.
+    /// * `admin` - The address that will own and administrate this contract.
+    ///
+    /// # Errors
+    /// Returns [`Error::AlreadyInitialized`] if the contract has already been set up.
     pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
         if storage::read_config(&env).is_some() {
             return Err(Error::AlreadyInitialized);
@@ -36,7 +43,16 @@ impl Contract {
         Ok(())
     }
 
-    /// Updates the contract value after authenticating the administrator.
+    /// Updates the configured budget allocation value.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban execution environment.
+    /// * `admin` - The contract administrator; must match the address used during `initialize`.
+    /// * `value` - The new non-negative allocation value.
+    ///
+    /// # Errors
+    /// Returns [`Error::InvalidAmount`] if `value` is negative.
+    /// Returns [`Error::Unauthorized`] if the caller is not the administrator.
     pub fn set_value(env: Env, admin: Address, value: i128) -> Result<(), Error> {
         admin.require_auth();
         if value < 0 {
@@ -50,7 +66,13 @@ impl Contract {
         Ok(())
     }
 
-    /// Returns the current configured value.
+    /// Returns the current configured allocation value.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban execution environment.
+    ///
+    /// # Returns
+    /// The stored value, or `0` if the contract has not been initialized.
     pub fn get_value(env: Env) -> i128 {
         storage::read_config(&env).map(|c| c.value).unwrap_or(0)
     }

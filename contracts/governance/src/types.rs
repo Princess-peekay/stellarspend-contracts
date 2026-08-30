@@ -19,4 +19,3 @@ pub struct Config {
     /// threshold once governance-specific logic is implemented).
     pub value: i128,
 }
-

@@ -19,4 +19,3 @@ pub struct Config {
     /// once rewards-specific logic is implemented).
     pub value: i128,
 }
-

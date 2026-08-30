@@ -120,8 +120,7 @@ mod tests {
         let recipients = vec![&env, r1.clone()];
         let amounts = vec![&env, 200_i128];
 
-        let result =
-            client.try_distribute_rewards(&admin, &owner, &del_id, &recipients, &amounts);
+        let result = client.try_distribute_rewards(&admin, &owner, &del_id, &recipients, &amounts);
         assert_eq!(result, Err(Ok(Error::DelegationCheckFailed)));
     }
 
@@ -138,8 +137,7 @@ mod tests {
         let recipients = vec![&env, r1.clone()];
         let amounts = vec![&env, 1_i128];
 
-        let result =
-            client.try_distribute_rewards(&admin, &owner, &del_id, &recipients, &amounts);
+        let result = client.try_distribute_rewards(&admin, &owner, &del_id, &recipients, &amounts);
         assert_eq!(result, Err(Ok(Error::DelegationCheckFailed)));
     }
 
@@ -157,8 +155,7 @@ mod tests {
         let recipients = vec![&env, r1.clone()];
         let amounts = vec![&env, 100_i128];
 
-        let result =
-            client.try_distribute_rewards(&admin, &owner, &del_id, &recipients, &amounts);
+        let result = client.try_distribute_rewards(&admin, &owner, &del_id, &recipients, &amounts);
         assert_eq!(result, Err(Ok(Error::DelegationCheckFailed)));
     }
 
@@ -178,8 +175,7 @@ mod tests {
         let recipients = vec![&env, r1.clone()];
         let amounts = vec![&env, 100_i128, 200_i128]; // length mismatch
 
-        let result =
-            client.try_distribute_rewards(&admin, &owner, &del_id, &recipients, &amounts);
+        let result = client.try_distribute_rewards(&admin, &owner, &del_id, &recipients, &amounts);
         assert_eq!(result, Err(Ok(Error::InvalidAmount)));
     }
 
@@ -195,8 +191,7 @@ mod tests {
         let recipients = vec![&env, r1.clone()];
         let amounts = vec![&env, 0_i128]; // zero is invalid
 
-        let result =
-            client.try_distribute_rewards(&admin, &owner, &del_id, &recipients, &amounts);
+        let result = client.try_distribute_rewards(&admin, &owner, &del_id, &recipients, &amounts);
         assert_eq!(result, Err(Ok(Error::InvalidAmount)));
     }
 
@@ -212,8 +207,7 @@ mod tests {
         let recipients = vec![&env, r1.clone()];
         let amounts = vec![&env, -50_i128];
 
-        let result =
-            client.try_distribute_rewards(&admin, &owner, &del_id, &recipients, &amounts);
+        let result = client.try_distribute_rewards(&admin, &owner, &del_id, &recipients, &amounts);
         assert_eq!(result, Err(Ok(Error::InvalidAmount)));
     }
 

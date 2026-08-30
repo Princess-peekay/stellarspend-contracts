@@ -20,4 +20,3 @@ pub struct Config {
     /// implemented).
     pub value: i128,
 }
-

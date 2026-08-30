@@ -148,10 +148,8 @@ impl DocumentManager {
             .persistent()
             .set(&DocumentDataKey::Document(id.clone()), &doc);
 
-        env.events().publish(
-            (symbol_short!("doc_xfer"), id),
-            new_owner,
-        );
+        env.events()
+            .publish((symbol_short!("doc_xfer"), id), new_owner);
         Ok(())
     }
 
